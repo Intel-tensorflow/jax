@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Union
 
+import numpy as np
+from jax._src.dtypes import iinfo, issubdtype
 from jax._src.sharding import Sharding
 from jax._src.sharding_impls import AUTO as AutoSharding, is_auto
 from jax._src.lib import xla_client as xc
@@ -28,27 +30,43 @@ class AutoLayout:
 
 
 class DeviceLocalLayout:
-  layout: xc.PjRtLayout
-
   AUTO = AutoLayout()
 
-  def __init__(self, layout: xc.PjRtLayout):
-    self._layout = layout
-    self._layout_str = str(self._layout)
+  def __init__(self, major_to_minor: tuple[int, ...],
+               tiling: tuple[tuple[int, ...], ...] | None = None):
+    self.major_to_minor = tuple(major_to_minor)
+    self._tiling = None if tiling is None else tuple(map(tuple, tiling))
+
+  @staticmethod
+  def from_pjrt_layout(pjrt_layout: xc.PjRtLayout):
+    xla_layout = pjrt_layout._xla_layout()
+    return DeviceLocalLayout(xla_layout.minor_to_major()[::-1],
+                             xla_layout.tiling())
 
   def __repr__(self):
-    return f'DeviceLocalLayout({self._layout_str})'
+    return (f'DeviceLocalLayout(major_to_minor={self.major_to_minor},'
+            f' tiling={self._tiling})')
 
   def __hash__(self):
-    return hash(self._layout)
+    return hash((self.major_to_minor, self._tiling))
 
   def __eq__(self, other):
     if not isinstance(other, DeviceLocalLayout):
       return False
-    return self._layout == other._layout
+    return (self.major_to_minor == other.major_to_minor and
+            self._tiling == other._tiling)
 
-  def _to_xla_layout(self) -> str:
-    return self._layout_str
+  def _to_xla_layout(self, dtype) -> str:
+    if self._tiling is None:
+      xla_layout = xc.Layout(self.major_to_minor[::-1])
+    else:
+      if issubdtype(dtype, np.integer):
+        sub_byte_size = iinfo(dtype).bits if iinfo(dtype).bits < 8 else 0
+      else:
+        sub_byte_size = 0
+      xla_layout = xc.Layout(self.major_to_minor[::-1], self._tiling,
+                             sub_byte_size)
+    return str(xla_layout)
 
 
 LayoutOptions = Union[DeviceLocalLayout, None, AutoLayout]
