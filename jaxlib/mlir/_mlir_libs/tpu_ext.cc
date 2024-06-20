@@ -18,6 +18,7 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -70,7 +71,9 @@ constexpr MlirTpuI64TargetTuple TARGET_SHAPE{8, 128};
 // TODO(tlongeri): For our use-case, we don't really need C++ exceptions - just
 // setting the exception object and returning NULL to Python should suffice, but
 // not sure if this is possible with pybind.
-class NotImplementedException : public std::exception {};
+class NotImplementedException : public std::runtime_error {
+  using runtime_error::runtime_error;
+};
 }  // namespace
 
 template <>
@@ -92,7 +95,7 @@ struct py::detail::type_caster<MlirTpuImplicitDim> {
     } else if (src.is(implicit_dim_cls.attr("SECOND_MINOR"))) {
       value = MlirTpuImplicitDimSecondMinor;
     } else {
-      throw NotImplementedException();
+      throw py::value_error();
     }
     return true;
   }
@@ -165,16 +168,22 @@ class NotImplementedDetector {
 
   ~NotImplementedDetector() { mlirContextDetachDiagnosticHandler(ctx_, id_); }
   bool detected() const { return detected_; }
+  const std::string& message() const { return message_; }
 
  private:
-  static void handleDiagnosticMessage(MlirStringRef str,
+  static void handleDiagnosticMessage(MlirStringRef c_mlir_str,
                                       void* opaque_detector) {
     // Note that we receive each argument to the stream separately.
     // "Not implemented" must be entirely in a single argument.
     NotImplementedDetector* detector =
         static_cast<NotImplementedDetector*>(opaque_detector);
-    if (llvm::StringRef(str.data, str.length).contains("Not implemented")) {
+    llvm::StringRef str(c_mlir_str.data, c_mlir_str.length);
+    if (!detector->detected_ && str.consume_front("Not implemented")) {
+      str.consume_front(": ");
       detector->detected_ = true;
+    }
+    if (detector->detected_) {
+      detector->message_.append(str);
     }
   }
   static MlirLogicalResult handleDiagnostic(MlirDiagnostic diag,
@@ -187,6 +196,7 @@ class NotImplementedDetector {
     return mlirLogicalResultFailure();  // Propagate to other handlers
   }
   bool detected_ = false;
+  std::string message_;
   const MlirContext ctx_;
   const MlirDiagnosticHandlerID id_;
 };
@@ -594,7 +604,7 @@ PYBIND11_MODULE(_tpu_ext, m) {
                                                    layout, val, TARGET_SHAPE);
     if (val_arr.vals == nullptr) {
       if (detector.detected()) {
-        throw NotImplementedException();
+        throw NotImplementedException(detector.message());
       }
       throw py::value_error("Failed to disassemble");
     }
@@ -614,7 +624,7 @@ PYBIND11_MODULE(_tpu_ext, m) {
               mlirTpuApplyLayoutOp(hardware_generation, c_op, TARGET_SHAPE);
           if (mlirLogicalResultIsFailure(res)) {
             if (detector.detected()) {
-              throw NotImplementedException();
+              throw NotImplementedException(detector.message());
             }
             throw std::runtime_error("applyLayoutOp failed");
           }
@@ -626,7 +636,7 @@ PYBIND11_MODULE(_tpu_ext, m) {
                                             dst, TARGET_SHAPE);
           if (new_v.ptr == nullptr) {
             if (detector.detected()) {
-              throw NotImplementedException();
+              throw NotImplementedException(detector.message());
             }
             throw py::value_error("Failed to relayout");
           }
@@ -636,7 +646,7 @@ PYBIND11_MODULE(_tpu_ext, m) {
     try {
       if (p) std::rethrow_exception(p);
     } catch (const NotImplementedException& e) {
-      PyErr_SetNone(PyExc_NotImplementedError);
+      PyErr_SetString(PyExc_NotImplementedError, e.what());
     }
   });
 
