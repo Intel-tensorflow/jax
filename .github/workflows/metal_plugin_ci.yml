@@ -3,7 +3,7 @@
 name: Jax-Metal CI
 on:
   schedule:
-    - cron: "0 12 * * *" # Daily at 12:00 UTC
+    - cron: "0 12 * * *" # Daily at 12:00 UTC.
   workflow_dispatch: # allows triggering the workflow run manually
   pull_request:  # Automatically trigger on pull requests affecting this file
     branches:
