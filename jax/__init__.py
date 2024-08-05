@@ -14,7 +14,7 @@
 
 # Set default C++ logging level before any logging happens.
 import os as _os
-_os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '1')
+# _os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '1')
 del _os
 
 # Import version first, because other submodules may reference it.

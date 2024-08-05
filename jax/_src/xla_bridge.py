@@ -83,6 +83,10 @@ _ROCM_VISIBLE_DEVICES = config.string_flag(
     'jax_rocm_visible_devices', 'all',
     'Restricts the set of ROCM devices that JAX will use. Either "all", or a '
     'comma-separate list of integer device IDs.')
+_SYCL_VISIBLE_DEVICES = config.string_flag(
+    'jax_sycl_visible_devices', 'all',
+    'Restricts the set of SYCL devices that JAX will use. Either "all", or a '
+    'comma-separate list of integer device IDs.')
 
 _MOCK_NUM_GPU_PROCESSES = config.int_flag(
     name="mock_num_gpu_processes",
@@ -484,7 +488,16 @@ if hasattr(xla_client, "make_gpu_client"):
       priority=200,
       fail_quietly=True,
   )
-
+  register_backend_factory(
+      "sycl",
+      partial(
+          make_gpu_client,
+          platform_name="sycl",
+          visible_devices_flag=_SYCL_VISIBLE_DEVICES,
+      ),
+      priority=200,
+      fail_quietly=True,
+  )
 
 if hasattr(xla_client, "make_tpu_client"):
   # TODO(phawkins,skyewm): switch TPU plugin to use the PJRT plugin mechanism,
@@ -769,6 +782,7 @@ def _discover_and_register_pjrt_plugins():
 _platform_aliases = {
   "cuda": "gpu",
   "rocm": "gpu",
+  "sycl": "gpu",
 }
 
 _alias_to_platforms: dict[str, list[str]] = {}

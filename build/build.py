@@ -42,6 +42,8 @@ def is_windows():
 def shell(cmd):
   try:
     logger.info("shell(): %s", cmd)
+    print("CMD_CHECK")
+    print(cmd)
     output = subprocess.check_output(cmd)
   except subprocess.CalledProcessError as e:
     logger.info("subprocess raised: %s", e)
@@ -244,7 +246,7 @@ def write_bazelrc(*, remote_build,
                   rocm_amdgpu_targets, target_cpu_features,
                   wheel_cpu, enable_mkl_dnn, use_clang, clang_path,
                   clang_major_version, enable_cuda, enable_nccl, enable_rocm,
-                  build_gpu_plugin, python_version):
+                  enable_sycl, build_gpu_plugin, python_version):
   tf_cuda_paths = []
 
   with open("../.jax_configure.bazelrc", "w") as f:
@@ -315,6 +317,10 @@ def write_bazelrc(*, remote_build,
         f.write(f"build --action_env=CLANG_CUDA_COMPILER_PATH={clang_path}\n")
     if enable_rocm:
       f.write("build --config=rocm\n")
+      if not enable_nccl:
+        f.write("build --config=nonccl\n")
+    if enable_sycl:
+      f.write("build --config=sycl\n")
       if not enable_nccl:
         f.write("build --config=nonccl\n")
     if build_gpu_plugin:
@@ -466,6 +472,10 @@ def main():
       parser,
       "enable_rocm",
       help_str="Should we build with ROCm enabled?")
+  add_boolean_argument(
+      parser,
+      "enable_sycl",
+      help_str="Should we build with SYCL enabled?")
   add_boolean_argument(
       parser,
       "enable_nccl",
@@ -633,6 +643,8 @@ def main():
     if rocm_toolkit_path:
       print(f"ROCm toolkit path: {rocm_toolkit_path}")
     print(f"ROCm amdgpu targets: {args.rocm_amdgpu_targets}")
+  
+  print("SYCL enabled: {}".format("yes" if args.enable_sycl else "no"))
 
   write_bazelrc(
       remote_build=args.remote_build,
@@ -653,6 +665,7 @@ def main():
       enable_cuda=args.enable_cuda,
       enable_nccl=args.enable_nccl,
       enable_rocm=args.enable_rocm,
+      enable_sycl=args.enable_sycl,
       build_gpu_plugin=args.build_gpu_plugin,
       python_version=python_version,
   )

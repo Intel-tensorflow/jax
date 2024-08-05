@@ -126,6 +126,13 @@ build:rocm --define=xla_python_enable_gpu=true
 build:rocm --repo_env TF_NEED_ROCM=1
 build:rocm --action_env TF_ROCM_AMDGPU_TARGETS="gfx900,gfx906,gfx908,gfx90a,gfx1030"
 
+build:sycl --crosstool_top=@local_config_sycl//crosstool:toolchain
+build:sycl --define=using_sycl=true
+build:sycl --@xla//xla/python:enable_gpu=true
+build:sycl --define=xla_python_enable_gpu=true
+build:sycl --define=tensorflow_mkldnn_contraction_kernel=0
+build:sycl --repo_env TF_NEED_SYCL=1
+
 build:nonccl --define=no_nccl_support=true
 
 # Windows has a relatively short command line limit, which JAX has begun to hit.
