@@ -1,0 +1,104 @@
+diff --git a/big_vision/models/ppp/gemma.py b/big_vision/models/ppp/gemma.py
+index d17c9f6..3a9d1e9 100644
+--- a/big_vision/models/ppp/gemma.py
++++ b/big_vision/models/ppp/gemma.py
+@@ -48,6 +48,7 @@ import jax.numpy as jnp
+ import ml_collections
+ import numpy as np
+ import orbax.checkpoint
++from jax.ad_checkpoint import checkpoint_name
+ 
+ 
+ def get_config(variant):
+@@ -219,6 +220,7 @@ class RMSNorm(nn.Module):
+     var = jnp.mean(jnp.square(x), axis=-1, keepdims=True)
+     normed_inputs = jnp.asarray(x * jnp.reciprocal(jnp.sqrt(var + 1e-06)))
+     normed_inputs = normed_inputs * (1 + scale)
++    normed_inputs = checkpoint_name(normed_inputs,"normed_inputs")
+     return normed_inputs
+ 
+ 
+@@ -290,6 +292,8 @@ class Attention(nn.Module):
+       q = self.q_einsum("BTD,NDH->BTNH", x)
+       k, v = self.kv_einsum("BSD,2KDH->2BSKH", x)
+ 
++    v = checkpoint_name(v, "v_proj")
++
+     q = _apply_rope(q, positions=positions)
+     if self.query_pre_attn_norm == "rsqrt_head_dim":
+       q *= self.head_dim**-0.5
+@@ -307,7 +311,16 @@ class Attention(nn.Module):
+                               cache_dtype=self.cache_dtype)
+ 
+     q = einops.rearrange(q, "B T (K G) H -> B T K G H", K=self.num_kv_heads)
++    
++        # Add checkpoint names for activation offloading
++    q = checkpoint_name(q, "q_proj")
++    k = checkpoint_name(k, "k_proj")
++   
++
+     logits = jnp.einsum("BTKGH,BSKH->BKGTS", q, k)
++
++
++
+     logits = logits.astype(jnp.float32)
+ 
+     if self.attn_logits_softcap:
+@@ -329,7 +342,7 @@ class Attention(nn.Module):
+     encoded = jnp.einsum("BKGTS,BSKH->BTKGH", probs, v)
+     encoded = einops.rearrange(encoded, "B T K G H -> B T (K G) H")
+     attn_output = self.attn_vec_einsum("BTNH,NHD->BTD", encoded)
+-
++    attn_output = checkpoint_name(attn_output, "attn_output")
+     return attn_output
+ 
+ 
+@@ -358,7 +371,7 @@ class FeedForward(nn.Module):
+         (self.hidden_dim, self.features),
+     )
+     outputs = jnp.dot(activations, w_linear)
+-
++    outputs = checkpoint_name(outputs,"ffn_outputs")
+     return outputs
+ 
+ 
+@@ -417,6 +430,7 @@ class Block(nn.Module):
+     if self.post_norms:
+       outputs = self.post_ffw_norm(outputs)
+     outputs = residual + outputs
++    outputs = checkpoint_name(outputs, f"block_output")
+     return outputs, unused_scan_arg
+ 
+ 
+@@ -518,6 +532,31 @@ class Model(nn.Module):
+ 
+     if self.remat_policy == "none":
+       block_cls = Block
++    elif self.remat_policy == "qkv_proj_offloaded":
++      from jax import checkpoint_policies as cp
++      offload_names = [
++          'q_proj',
++          'k_proj','v_proj','ffn_outputs'
++      ]
++      offload_policy = cp.save_and_offload_only_these_names(
++            names_which_can_be_saved=[], 
++            names_which_can_be_offloaded=offload_names,  
++            offload_src="device",  
++            offload_dst="pinned_host"  
++        )
++      block_cls = nn.remat(
++          Block,
++          prevent_cse=not self.scan,
++          static_argnums=(5, 6),  # 0=self, 5=decode, 6=deterministic
++          policy=offload_policy,
++      )
++    elif self.remat_policy == "full_remat":
++      block_cls = nn.remat(
++          Block,
++          prevent_cse=not self.scan,
++          static_argnums=(5, 6),  # 0=self, 5=decode, 6=deterministic
++          policy=getattr(jax.checkpoint_policies, "nothing_saveable"),
++      )
+     else:
+       block_cls = nn.remat(
+           Block,
