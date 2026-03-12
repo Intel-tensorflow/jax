@@ -200,3 +200,25 @@ def update_setup_with_rocm_version(file_dir: pathlib.Path, rocm_version: str):
   )
   with open(src_file, "w") as f:
     f.write(content)
+
+def update_setup_with_oneapi_version(file_dir: pathlib.Path, oneapi_version: str):
+  src_file = file_dir / "setup.py"
+  with open(src_file) as f:
+    content = f.read()
+  # Sanitize oneapi_version to replace dots with underscores for package names
+  sanitized_version = oneapi_version.replace(".", "_")
+  content = content.replace(
+      "oneapi_version = 0  # placeholder", f"oneapi_version = '{sanitized_version}'"
+  )
+  # Also update the package_name to use the sanitized version directly
+  content = content.replace(
+      'package_name = f"jax_oneapi{oneapi_version}_plugin"',
+      f'package_name = "jax_oneapi{sanitized_version}_plugin"'
+  )
+  # Also handle PJRT package name pattern
+  content = content.replace(
+      'package_name = f"jax_plugins.xla_oneapi{oneapi_version}"',
+      f'package_name = "jax_plugins.xla_oneapi{sanitized_version}"'
+  )
+  with open(src_file, "w") as f:
+    f.write(content)
