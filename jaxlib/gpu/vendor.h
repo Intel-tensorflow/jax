@@ -859,9 +859,7 @@ inline constexpr uint32_t kNumThreadsPerWarp = 64;
 
 #elif defined(JAX_GPU_ONEAPI)
 
-// TODO(Intel-tf):
-// placeholder for OneAPI/SYCL glue code compilation.
-// Full GPU kernel support requires additional type mappings.
+#include "jaxlib/oneapi/oneapi_gpu_runtime.h"
 
 #define JAX_GPU_NAMESPACE oneapi
 #define JAX_GPU_PREFIX "oneapi"
@@ -871,9 +869,39 @@ inline constexpr uint32_t kNumThreadsPerWarp = 64;
 #define JAX_GPU_HAVE_FP8 0
 #define JAX_GPU_HAVE_SOLVER_GEEV 0
 
+typedef ::sycl::queue *gpuStream_t;
+
+// Reference:
+// https://github.khronos.org/SYCL_Reference/iface/exception.html#member-functions
+// gpuError_t maps to std::error_code. SYCL exceptions expose e.code() which
+// returns a std::error_code in the sycl error category.
+typedef std::error_code gpuError_t;
+
+// Stub status types for solver/sparse/blas, no SYCL equivalent exists.
+// Distinct enums keep the AsStatus overloads distinguishable.
+enum class gpusolverStatus_t : int {};
+enum class gpusparseStatus_t : int {};
+enum class gpublasStatus_t : int {};
+
+// Reference:
+// https://github.khronos.org/SYCL_Reference/iface/exception.html#standard-sycl-error-codes
+// SYCL application never throws an exception with "sucess" error code, and no
+// other code has the value zero therfore, construct a std::error_code with
+// sycl::errc::success to represent gpuSuccess ("not an error"). Success paths
+// must return gpuSuccess (sycl category); a bare std::error_code{} is generic
+// category and will fail CHECK_EQ.
+#define gpuSuccess ::jax::oneapi::SyclSuccess()
+#define GPU_EVENT_DEFAULT 0
+
+#define gpuMemcpyDeviceToHost ::jax::oneapi::SyclMemcpyDeviceToHost
+#define gpuMemcpyHostToDevice ::jax::oneapi::SyclMemcpyHostToDevice
+#define gpuMemcpyDeviceToDevice ::jax::oneapi::SyclMemcpyDeviceToDevice
+#define gpuMemcpyAsync ::jax::oneapi::SyclMemcpyAsync
+#define gpuGetLastError ::jax::oneapi::SyclGetLastError
+#define gpuStreamSynchronize ::jax::oneapi::SyclStreamSynchronize
+#define gpuGetErrorString ::jax::oneapi::SyclGetErrorString
+
 namespace jax::oneapi {
-// Probably the SYCL equivalent is "sub-group size".
-// Placeholder to satisfy the vendor.h interface.
 inline constexpr uint32_t kNumThreadsPerWarp = 32;
 }  // namespace jax::oneapi
 

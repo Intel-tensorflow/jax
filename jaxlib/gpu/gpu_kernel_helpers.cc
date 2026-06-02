@@ -157,7 +157,7 @@ std::string ErrorString(cufftResult status) {
   }
 }
 
-#else
+#elif defined(JAX_GPU_HIP)
 
 std::string ErrorString(hipsparseStatus_t status) {
   // TODO(reza): check and see if we can use hipify
@@ -249,6 +249,14 @@ std::string ErrorString(hipblasStatus_t status) {
   }
 }
 
+#else
+
+// OneAPI/SYCL has no equivalent of cusolver/cublas/cusparse status types;
+// no ErrorString overloads will be added here.
+// The HIP ErrorString overloads were in #else rather than under a
+// JAX_GPU_HIP guard, which has be added above elif DEFINED(JAX_GPU_HIP) to
+// avoid compiling for OneAPI/SYCL.
+
 #endif
 
 template <typename T>
@@ -266,6 +274,10 @@ absl::Status AsStatus(gpuError_t error, const char* file, std::int64_t line,
   return absl::OkStatus();
 }
 
+// OneAPI/SYCL has no equivalent of cusolver/cublas/cusparse status types;
+// ifndef guard is added to prevent compilation of AsStatus overloads for
+// OneAPI/SYCL.
+#ifndef JAX_GPU_ONEAPI
 absl::Status AsStatus(gpusolverStatus_t status, const char* file,
                       std::int64_t line, const char* expr) {
   if (ABSL_PREDICT_FALSE(status != GPUSOLVER_STATUS_SUCCESS))
@@ -286,6 +298,7 @@ absl::Status AsStatus(gpublasStatus_t status, const char* file,
     return absl::InternalError(ErrorString(status, file, line, expr));
   return absl::OkStatus();
 }
+#endif
 
 #ifdef JAX_GPU_CUDA
 absl::Status AsStatus(CUresult error, const char* file, std::int64_t line,
