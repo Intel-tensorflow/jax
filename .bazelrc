@@ -291,6 +291,10 @@ common:oneapi --repo_env=ENABLE_INTEL_XPU_TRITON=1
 # oneAPI Hermetic setup
 common:oneapi --repo_env=SYCL_BUILD_HERMETIC=1
 
+# Strip Bazel solib RUNPATHs only from distributable OneAPI wheels.
+build:oneapi_release_wheel --config=oneapi
+build:oneapi_release_wheel --//jaxlib/oneapi:build_for_wheel=true
+
 
 # #############################################################################
 # Cache options below.

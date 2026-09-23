@@ -13,18 +13,33 @@
 # limitations under the License.
 
 # INTEL ONEAPI plugin extension and GPU kernels
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@local_config_sycl//sycl:build_defs.bzl", "sycl_library")
 load("@rules_python//python:defs.bzl", "py_library")
 load(
     "//jaxlib:jax.bzl",
+    "if_oneapi_is_configured",
     "nanobind_extension",
 )
+load("//jaxlib/oneapi:oneapi_rpath.bzl", "oneapi_nanobind_extension")
 
 licenses(["notice"])
 
 package(
     default_applicable_licenses = [],
     default_visibility = ["//:__subpackages__"],
+)
+
+bool_flag(
+    name = "build_for_wheel",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "build_for_wheel_enabled",
+    flag_values = {":build_for_wheel": "True"},
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -127,7 +142,7 @@ sycl_library(
     ],
 )
 
-nanobind_extension(
+oneapi_nanobind_extension(
     name = "_solver",
     srcs = ["//jaxlib/gpu:solver.cc"],
     copts = [
@@ -150,7 +165,7 @@ nanobind_extension(
     ],
 )
 
-nanobind_extension(
+oneapi_nanobind_extension(
     name = "_prng",
     srcs = ["//jaxlib/gpu:prng.cc"],
     copts = [
@@ -192,7 +207,7 @@ cc_library(
     ],
 )
 
-nanobind_extension(
+oneapi_nanobind_extension(
     name = "_hybrid",
     srcs = ["//jaxlib/gpu:hybrid.cc"],
     copts = [
@@ -216,12 +231,68 @@ nanobind_extension(
     ],
 )
 
+sycl_library(
+    name = "oneapi_linalg_kernels_impl",
+    srcs = ["//jaxlib/gpu:linalg_kernels_oneapi.cc"],
+    hdrs = ["//jaxlib/gpu:linalg_kernels.h"],
+    local_defines = [
+        "EIGEN_USE_SYCL=1",
+        "EIGEN_DONT_VECTORIZE_SYCL=1",
+    ],
+    copts = [
+        "-U_FORTIFY_SOURCE",
+        "-D_FORTIFY_SOURCE=0",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":oneapi_gpu_kernel_helpers",
+        ":oneapi_vendor",
+        "//jaxlib:tridiagonal_solve_perturbed",
+        "@xla//xla/ffi/api:ffi",
+    ],
+)
+
+sycl_library(
+    name = "oneapi_linalg_kernels",
+    srcs = ["//jaxlib/gpu:linalg_kernels.cc"],
+    hdrs = ["//jaxlib/gpu:linalg_kernels.h"],
+    features = ["-use_header_modules"],
+    deps = [
+        ":oneapi_gpu_kernel_helpers",
+        ":oneapi_linalg_kernels_impl",
+        ":oneapi_vendor",
+        ":oneapi_gpu_runtime",
+        "//jaxlib:ffi_helpers",
+        "@com_google_absl//absl/strings:str_format",
+        "@xla//xla/ffi/api:ffi",
+    ],
+)
+
+oneapi_nanobind_extension(
+    name = "_linalg",
+    srcs = ["//jaxlib/gpu:linalg.cc"],
+    copts = [
+        "-fexceptions",
+        "-fno-strict-aliasing",
+    ],
+    features = ["-use_header_modules"],
+    module_name = "_linalg",
+    deps = [
+        ":oneapi_gpu_kernel_helpers",
+        ":oneapi_linalg_kernels",
+        ":oneapi_vendor",
+        "//jaxlib:kernel_nanobind_helpers",
+        "@nanobind",
+    ],
+)
+
 py_library(
     name = "oneapi_gpu_support",
     deps = [
         ":_hybrid",
         ":_prng",
         ":_solver",
+        ":_linalg",
     ],
 )
 
@@ -267,7 +338,7 @@ sycl_library(
     ],
 )
 
-nanobind_extension(
+oneapi_nanobind_extension(
     name = "oneapi_plugin_extension",
     srcs = ["oneapi_plugin_extension.cc"],
     module_name = "oneapi_plugin_extension",
@@ -280,4 +351,13 @@ nanobind_extension(
         "@nanobind",
         "@oneapi//:headers",
     ],
+)
+
+py_library(
+    name = "gpu_only_test_deps",
+    # `if_oneapi_is_configured` will default to `[]`.
+    deps = if_oneapi_is_configured([
+        ":oneapi_gpu_support",
+        ":oneapi_plugin_extension",
+    ]),
 )

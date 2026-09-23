@@ -83,6 +83,7 @@ oneapi_version_flag="--oneapi_version=$JAXCI_ONEAPI_VERSION"
 
 # Build the artifact.
 python build/build.py build --wheels="$artifact" \
+  --bazel_options=--config=oneapi_release_wheel \
   --bazel_options=--config="$bazelrc_config" $bazel_remote_cache \
   $bazel_cpu_pool_config \
   --bazel_startup_options="$bazel_startup_options" \
@@ -97,6 +98,7 @@ python build/build.py build --wheels="$artifact" \
 # wheel from above.
 if [[ "$JAXCI_ARTIFACT_TYPE" == "release" && -n "$JAXCI_WHEEL_RC_VERSION" ]]; then
   python build/build.py build --wheels="$artifact" \
+    --bazel_options=--config=oneapi_release_wheel \
     --bazel_options=--config="$bazelrc_config" $bazel_remote_cache \
     $bazel_cpu_pool_config \
     --bazel_startup_options="$bazel_startup_options" \

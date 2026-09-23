@@ -19,6 +19,7 @@ load(
   "py_library_providing_imports_info",
   "pytype_library",
 )
+load("//jaxlib/oneapi:oneapi_rpath.bzl", "oneapi_cc_binary")
 
 package(
     default_applicable_licenses = [],
@@ -33,7 +34,7 @@ exports_files([
     "setup.py",
 ])
 
-cc_binary(
+oneapi_cc_binary(
     name = "pjrt_c_api_gpu_plugin.so",
     linkopts = [
         "-Wl,--version-script,$(location :gpu_version_script.lds)",

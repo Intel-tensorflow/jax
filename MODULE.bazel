@@ -33,6 +33,8 @@ archive_override(
     module_name = "xla",
     integrity = "sha256-MsuAh9iDGKAfmXTq1iVOHKBtJj+hhH9hUDN5UlvUaJc=",
     strip_prefix = "xla-91888df6ce85102c30220e41d952065925e10886",
+    patch_strip = 1,
+    patches = ["xla.patch"],
     urls = ["https://github.com/openxla/xla/archive/91888df6ce85102c30220e41d952065925e10886.tar.gz"],
 )
 

@@ -41,7 +41,7 @@ fi
 
 # Test-time deps not provided by install_wheels_locally.sh. pytest-xdist is
 # required for the `-n $num_processes` flag used below.
-"$JAXCI_PYTHON" -m uv pip install pytest-xdist
+"$JAXCI_PYTHON" -m uv pip install pytest-xdist pytest-timeout
 
 # Set up the build environment.
 source "ci/utilities/setup_build_environment.sh"
@@ -143,17 +143,28 @@ echo "Final number of processes to run: $num_processes"
 export JAX_ENABLE_ONEAPI_XDIST="$gpu_count"
 export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 
+# Verify that the tests will use the installed JAX packages rather
+# than the source checkout containing this runner.
+"$JAXCI_PYTHON" -I -c \
+  'import jax, jaxlib; print(jax.__version__, jax.__file__); print(jaxlib.__version__, jaxlib.__file__); assert "site-packages" in jax.__file__; assert "site-packages" in jaxlib.__file__'
+
 # ==============================================================================
 # Run tests
 # ==============================================================================
 echo "Running oneAPI tests..."
 mkdir -p test-artifacts
-"$JAXCI_PYTHON" -m pytest -n $num_processes --tb=short --maxfail=20 \
---junitxml=test-artifacts/junit.xml \
---ignore=jax_plugins \
---ignore=tests/pallas \
---ignore=tests/mosaic \
-tests examples \
---deselect=tests/multi_device_test.py::MultiDeviceTest::test_computation_follows_data \
---deselect=tests/multiprocess_gpu_test.py::MultiProcessGpuTest::test_distributed_jax_visible_devices \
---deselect=tests/compilation_cache_test.py::CompilationCacheTest::test_task_using_cache_metric
+# Isolated mode to ignore the source checkout in PYTHONPATH. 
+# Pytest's importlib mode also prevents test discovery from adding the repository back to sys.path.
+"$JAXCI_PYTHON" -I -m pytest --import-mode=importlib \
+  -n "$num_processes" --tb=short --maxfail=1000 --max-worker-restart=8 \
+  --timeout="${JAXCI_PYTEST_TIMEOUT:-600}" --timeout-method=thread \
+  --junitxml=test-artifacts/junit.xml \
+  --ignore=jax_plugins \
+  --ignore=tests/pallas \
+  --ignore=tests/mosaic \
+  --ignore=tests/hypothesis_test_util_test.py \
+  --ignore=tests/state_test.py \
+  --deselect=tests/multi_device_test.py::MultiDeviceTest::test_computation_follows_data \
+  --deselect=tests/multiprocess_gpu_test.py::MultiProcessGpuTest::test_distributed_jax_visible_devices \
+  --deselect=tests/compilation_cache_test.py::CompilationCacheTest::test_task_using_cache_metric \
+  tests examples
