@@ -41,7 +41,7 @@ fi
 
 # Test-time deps not provided by install_wheels_locally.sh. pytest-xdist is
 # required for the `-n $num_processes` flag used below.
-"$JAXCI_PYTHON" -m uv pip install pytest-xdist
+"$JAXCI_PYTHON" -m uv pip install pytest-xdist pytest-timeout cloudpickle
 
 # Set up the build environment.
 source "ci/utilities/setup_build_environment.sh"
@@ -148,7 +148,7 @@ export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 # ==============================================================================
 echo "Running oneAPI tests..."
 mkdir -p test-artifacts
-"$JAXCI_PYTHON" -m pytest -n $num_processes --tb=short --maxfail=20 \
+"$JAXCI_PYTHON" -m pytest -p no:excel -n $num_processes --maxfail=2000 --max-worker-restart=16 --timeout="${JAXCI_PYTEST_TIMEOUT:-600}" --timeout-method=thread \
 --junitxml=test-artifacts/junit.xml \
 --ignore=jax_plugins \
 --ignore=tests/pallas \

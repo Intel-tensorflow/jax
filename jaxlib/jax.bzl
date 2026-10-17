@@ -799,8 +799,8 @@ def jax_multiprocess_test(
             "--num_processes=4",
         ],
         "gpu": backend_variant_args.get("gpu", []) + [
-            "--num_processes=4",
-            "--gpus_per_process=2",
+            "--num_processes=2",
+            "--gpus_per_process=1",
         ],
         "tpu": backend_variant_args.get("tpu", []) + [
             "--tpu_chips_per_process=1",
