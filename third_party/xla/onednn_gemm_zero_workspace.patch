@@ -1,0 +1,28 @@
+diff --git a/xla/stream_executor/sycl/sycl_matmul_utils.cc b/xla/stream_executor/sycl/sycl_matmul_utils.cc
+--- a/xla/stream_executor/sycl/sycl_matmul_utils.cc
++++ b/xla/stream_executor/sycl/sycl_matmul_utils.cc
+@@ -434,13 +434,17 @@
+                         CreateOneDnnMatMulPrimDesc(dnnl_engine, params, alpha,
+                                                    effective_beta, epilogue));
+ 
+-  void* workspace_addr = workspace.opaque();
+-  if (matmul_pd->scratchpad_desc().get_size() > 0 &&
+-      scratch_allocator != nullptr) {
+-    ABSL_ASSIGN_OR_RETURN(
+-        stream_executor::DeviceAddress<uint8_t> alloc,
+-        scratch_allocator->AllocateBytes(matmul_pd->scratchpad_desc().get_size()));
+-    workspace_addr = alloc.opaque();
++  // Pass a workspace buffer only if oneDNN needs scratchpad memory.
++  const size_t scratchpad_size = matmul_pd->scratchpad_desc().get_size();
++  void* workspace_addr = DNNL_MEMORY_NONE;
++  if (scratchpad_size > 0) {
++    if (scratch_allocator != nullptr) {
++      ABSL_ASSIGN_OR_RETURN(stream_executor::DeviceAddress<uint8_t> alloc,
++                            scratch_allocator->AllocateBytes(scratchpad_size));
++      workspace_addr = alloc.opaque();
++    } else {
++      workspace_addr = workspace.opaque();
++    }
+   }
+ 
+   auto scratchpad_mem = dnnl::sycl_interop::make_memory(
