@@ -37,6 +37,7 @@ archive_override(
     patch_strip = 1,
     patches = [
         "//third_party:xla/xpu_triton_hook.patch",
+        "//third_party:xla/xla_oneapi.patch",
         "//third_party:xla/nvptx_compiler_target.patch",
         "//third_party:xla/windows_cpp_gen_intrinsics.patch",
     ],
