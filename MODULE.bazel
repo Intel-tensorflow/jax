@@ -37,6 +37,9 @@ archive_override(
     patch_strip = 1,
     patches = [
         "//third_party:xla/wsl_vmm_large_allocations.patch",
+        # Diff from xla_main_11_17_26 to bhavanis/end_to_end_xla_main_11_17_26
+        # (675223099840728d497b41a2ba5812a0bb472b4e).
+        "//third_party:xla/xla.patch",
     ],
     strip_prefix = "xla-97b8433b3ed82b78b742f751d2c7f510e5d78d25",
     urls = ["https://github.com/openxla/xla/archive/97b8433b3ed82b78b742f751d2c7f510e5d78d25.tar.gz"],

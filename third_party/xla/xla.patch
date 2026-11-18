@@ -1,0 +1,4069 @@
+diff --git a/build_tools/sycl/ci_test_xla.sh b/build_tools/sycl/ci_test_xla.sh
+index 5212c05664..92f39cb424 100644
+--- a/build_tools/sycl/ci_test_xla.sh
++++ b/build_tools/sycl/ci_test_xla.sh
+@@ -36,7 +36,8 @@ fi
+ TEST_TARGETS="${TEST_TARGETS:-\
+   //xla/stream_executor/... \
+   //xla/backends/gpu/codegen/emitters/tests/... \
+-  //xla/codegen/emitters/tests/...\
++  //xla/backends/gpu/runtime:make_batch_pointers_test_intelgpu_any \
++  //xla/codegen/emitters/tests/... \
+ }"
+ 
+ # On Ubuntu 22.04 and earlier the SPIR-V consumer rejects the SPV_KHR_bfloat16
+diff --git a/xla/backends/gpu/runtime/BUILD b/xla/backends/gpu/runtime/BUILD
+index c6110af5b4..abc1486443 100644
+--- a/xla/backends/gpu/runtime/BUILD
++++ b/xla/backends/gpu/runtime/BUILD
+@@ -118,6 +118,12 @@ cc_library(
+     ],
+ )
+ 
++cc_library(
++    name = "gpu_test_utils",
++    hdrs = ["gpu_test_utils.h"],
++    deps = ["//xla/stream_executor:stream_executor_h"],
++)
++
+ xla_cc_test(
+     name = "command_state_test",
+     srcs = ["command_state_test.cc"],
+@@ -303,6 +309,7 @@ xla_test(
+         ":command_state",
+         ":copy_thunk",
+         ":device_to_device_copy_thunk",
++        ":gpu_test_utils",
+         ":kernel_thunk",
+         ":memset_thunk",
+         ":shaped_slice",
+@@ -505,6 +512,7 @@ xla_test(
+         ":command_state",
+         ":device_to_device_copy_thunk",
+         ":execution_stream_id",
++        ":gpu_test_utils",
+         ":memset_thunk",
+         ":thunk",
+         ":thunk_executor",
+@@ -673,6 +681,7 @@ xla_test(
+         ":command_executor",
+         ":conditional_thunk",
+         ":device_to_device_copy_thunk",
++        ":gpu_test_utils",
+         ":gpublas_lt_matmul_thunk",
+         ":kernel_thunk",
+         ":memset_thunk",
+@@ -1057,6 +1066,7 @@ xla_test(
+         ":command",
+         ":command_state",
+         ":device_to_device_copy_thunk",
++        ":gpu_test_utils",
+         ":thunk",
+         ":thunk_proto_cc",
+         ":thunk_test_utils",
+@@ -1242,6 +1252,7 @@ xla_test(
+         ":command",
+         ":command_state",
+         ":legacy_custom_call_thunk",
++        ":gpu_test_utils",
+         ":thunk",
+         ":thunk_proto_cc",
+         ":thunk_test_utils",
+@@ -1872,6 +1883,7 @@ xla_test(
+         ":command",
+         ":command_state",
+         ":memset_thunk",
++        ":gpu_test_utils",
+         ":thunk",
+         ":thunk_proto_cc",
+         ":thunk_test_utils",
+@@ -4063,6 +4075,7 @@ xla_test(
+         ":command",
+         ":command_state",
+         ":replica_id_thunk",
++        ":gpu_test_utils",
+         ":thunk",
+         ":thunk_proto_cc",
+         ":thunk_test_utils",
+diff --git a/xla/backends/gpu/runtime/async_thunk_test.cc b/xla/backends/gpu/runtime/async_thunk_test.cc
+index d2e5c51ce0..8a2bf2089e 100644
+--- a/xla/backends/gpu/runtime/async_thunk_test.cc
++++ b/xla/backends/gpu/runtime/async_thunk_test.cc
+@@ -35,6 +35,7 @@ limitations under the License.
+ #include "xla/backends/gpu/runtime/command_state.h"
+ #include "xla/backends/gpu/runtime/device_to_device_copy_thunk.h"
+ #include "xla/backends/gpu/runtime/execution_stream_id.h"
++#include "xla/backends/gpu/runtime/gpu_test_utils.h"
+ #include "xla/backends/gpu/runtime/memset_thunk.h"
+ #include "xla/backends/gpu/runtime/thunk.h"
+ #include "xla/backends/gpu/runtime/thunk_executor.h"
+@@ -298,6 +299,10 @@ TEST(AsyncThunkTest, GpuExecutableFallsBackToMainStreamForMemcpyStreams) {
+ // is a no-op on update.
+ TEST(AsyncThunkTest, AsyncDoneRecordCommandBuffer) {
+   ASSERT_OK_AND_ASSIGN(auto executor, CreateExecutor());
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   // Create a paired start/done to obtain a valid AsyncExecution.
+diff --git a/xla/backends/gpu/runtime/command_buffer_cmd_test.cc b/xla/backends/gpu/runtime/command_buffer_cmd_test.cc
+index f27aaf98ef..94e3b05440 100644
+--- a/xla/backends/gpu/runtime/command_buffer_cmd_test.cc
++++ b/xla/backends/gpu/runtime/command_buffer_cmd_test.cc
+@@ -33,6 +33,7 @@ limitations under the License.
+ #include "xla/backends/gpu/runtime/command_state.h"
+ #include "xla/backends/gpu/runtime/copy_thunk.h"
+ #include "xla/backends/gpu/runtime/device_to_device_copy_thunk.h"
++#include "xla/backends/gpu/runtime/gpu_test_utils.h"
+ #include "xla/backends/gpu/runtime/kernel_thunk.h"
+ #include "xla/backends/gpu/runtime/memset_thunk.h"
+ #include "xla/backends/gpu/runtime/shaped_slice.h"
+@@ -237,6 +238,10 @@ TEST(CommandBufferCmdTest, WriteConflictBarrier) {
+ 
+ TEST(CommandBufferCmdTest, LaunchCmd) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   auto stream = stream_executor->CreateStream().value();
+   int64_t length = 4;
+@@ -314,6 +319,10 @@ TEST(CommandBufferCmdTest, LaunchCmd) {
+ 
+ TEST(CommandBufferCmdTest, LaunchCmdWithPriority) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   auto stream = stream_executor->CreateStream().value();
+   int64_t length = 4;
+@@ -393,6 +402,11 @@ TEST(CommandBufferCmdTest, LaunchCmdWithPriority) {
+ TEST(TracedCommandBuffer, GetOrUpdateCommandBuffer) {
+   auto run_traced_test = [](int trace_cache_size) {
+     se::StreamExecutor* executor = GpuExecutor();
++    if (IsUnsupportedGpuExecutor(executor)) {
++      GTEST_SKIP()
++          << "Skipping test because command buffers are not implemented "
++             "for oneAPI backend yet";
++    }
+ 
+     auto stream = executor->CreateStream().value();
+     auto traced_cmd = FakeCmd();
+@@ -484,6 +498,10 @@ TEST(TracedCommandBuffer, GetOrUpdateCommandBuffer) {
+ 
+ TEST(CommandBufferCmdTest, RecordExecutorsWithDependencies) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   auto stream = stream_executor->CreateStream().value();
+   int64_t length = 4;
+@@ -636,6 +654,10 @@ TEST(CommandBufferCmdTest,
+   };
+ 
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+   ASSERT_OK_AND_ASSIGN(auto trace_stream, stream_executor->CreateStream());
+ 
+diff --git a/xla/backends/gpu/runtime/command_buffer_thunk_test.cc b/xla/backends/gpu/runtime/command_buffer_thunk_test.cc
+index e649760cd9..034c2cebc2 100644
+--- a/xla/backends/gpu/runtime/command_buffer_thunk_test.cc
++++ b/xla/backends/gpu/runtime/command_buffer_thunk_test.cc
+@@ -44,6 +44,7 @@ limitations under the License.
+ #include "xla/backends/gpu/runtime/command_executor.h"
+ #include "xla/backends/gpu/runtime/conditional_thunk.h"
+ #include "xla/backends/gpu/runtime/device_to_device_copy_thunk.h"
++#include "xla/backends/gpu/runtime/gpu_test_utils.h"
+ #include "xla/backends/gpu/runtime/gpublas_lt_matmul_thunk.h"
+ #include "xla/backends/gpu/runtime/kernel_thunk.h"
+ #include "xla/backends/gpu/runtime/memset_thunk.h"
+@@ -204,6 +205,10 @@ class CountingDeviceToDeviceCopyThunk : public DeviceToDeviceCopyThunk {
+ 
+ TEST(CommandBufferThunkTest, DeviceToDeviceCopy) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -272,6 +277,10 @@ TEST(CommandBufferThunkTest, DeviceToDeviceCopy) {
+ 
+ TEST(CommandBufferThunkTest, UpdatePolicyIgnoresVaRemappedAllocations) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -351,6 +360,10 @@ TEST(CommandBufferThunkTest, UpdatePolicyIgnoresVaRemappedAllocations) {
+ 
+ TEST(CommandBufferThunkTest, AbsentPersistentAllocIndicesFallsBackToThunks) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+   constexpr int64_t kLength = 4;
+@@ -477,6 +490,10 @@ TEST(CommandBufferThunkTest,
+ TEST(CommandBufferThunkTest,
+      RequiresUpdateOnExecuteWithAllAllocationsPersistent) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+   constexpr int64_t kByteLength = sizeof(uint32_t);
+@@ -514,6 +531,10 @@ TEST(CommandBufferThunkTest,
+ 
+ TEST(CommandBufferThunkTest, MemzeroThunk) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -562,6 +583,10 @@ TEST(CommandBufferThunkTest, MemzeroThunk) {
+ 
+ TEST(CommandBufferThunkTest, Memset32Cmd) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -610,6 +635,10 @@ TEST(CommandBufferThunkTest, Memset32Cmd) {
+ 
+ TEST(CommandBufferThunkTest, Memset32CmdCommandBuffersDisabledDuringProfiling) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -672,6 +701,10 @@ TEST(CommandBufferThunkTest, Memset32CmdCommandBuffersDisabledDuringProfiling) {
+ 
+ TEST(CommandBufferThunkTest, Memset32CmdCommandBuffersEnabledDuringProfiling) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -739,6 +772,10 @@ TEST(CommandBufferThunkTest, Memset32CmdCommandBuffersEnabledDuringProfiling) {
+ 
+ TEST(CommandBufferThunkTest, Memset32CmdOnDifferentStreams) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -784,6 +821,10 @@ TEST(CommandBufferThunkTest, Memset32CmdOnDifferentStreams) {
+ 
+ TEST(CommandBufferThunkTest, LaunchCmd) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -882,6 +923,10 @@ TEST(CommandBufferThunkTest, LaunchCmd) {
+ 
+ TEST(CommandBufferThunkTest, CustomAddKernelLaunchCmd) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -1282,6 +1327,10 @@ TEST(CommandBufferThunkTest, CublasLtCmd) {
+ 
+ TEST(CommandBufferThunkTest, MultipleLaunchCmd) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+@@ -1654,6 +1703,10 @@ TEST(CommandBufferThunkTest, ToStringPrintsNestedThunks) {
+ 
+ TEST(CommandBufferThunkTest, EvictsAndReRecordsCommandBuffer) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+   constexpr int64_t kLength = 4;
+@@ -1729,6 +1782,11 @@ class CommandBufferThunkTelemetryTest : public ::testing::Test {
+ 
+   void SetUp() override {
+     executor_ = GpuExecutor();
++    if (IsUnsupportedGpuExecutor(executor_)) {
++      GTEST_SKIP()
++          << "Skipping test because command buffers are not implemented "
++             "for oneAPI backend yet";
++    }
+     // Mirrors `CommandBufferThunk::ShouldRecordTelemetry`: telemetry records
+     // only into command buffers that support node annotations (CUDA 13.2+).
+     ASSERT_OK_AND_ASSIGN(
+@@ -1937,6 +1995,10 @@ class DynamicWarmupCopyThunk : public CountingDeviceToDeviceCopyThunk {
+ 
+ TEST(CommandBufferThunkTest, DynamicWarmupRequestInPrepare) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(stream_executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+ 
+   constexpr int64_t kLength = 4;
+diff --git a/xla/backends/gpu/runtime/device_to_device_copy_thunk_test.cc b/xla/backends/gpu/runtime/device_to_device_copy_thunk_test.cc
+index 661a8ddfc5..0cf015182c 100644
+--- a/xla/backends/gpu/runtime/device_to_device_copy_thunk_test.cc
++++ b/xla/backends/gpu/runtime/device_to_device_copy_thunk_test.cc
+@@ -25,6 +25,7 @@ limitations under the License.
+ #include "absl/strings/ascii.h"
+ #include "xla/backends/gpu/runtime/command.h"
+ #include "xla/backends/gpu/runtime/command_state.h"
++#include "xla/backends/gpu/runtime/gpu_test_utils.h"
+ #include "xla/backends/gpu/runtime/thunk.h"
+ #include "xla/backends/gpu/runtime/thunk.pb.h"
+ #include "xla/backends/gpu/runtime/thunk_test_utils.h"
+@@ -175,6 +176,10 @@ TEST(DeviceToDeviceCopyThunkTest, FromProto) {
+ // is copied correctly after submission.
+ TEST(DeviceToDeviceCopyThunkTest, RecordCommandBuffer) {
+   se::StreamExecutor* executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   int64_t length = 4;
+@@ -224,6 +229,10 @@ TEST(DeviceToDeviceCopyThunkTest, RecordCommandBuffer) {
+ // copy to a different destination and verifies the update takes effect.
+ TEST(DeviceToDeviceCopyThunkTest, RecordCommandBufferUpdate) {
+   se::StreamExecutor* executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   int64_t length = 4;
+diff --git a/xla/backends/gpu/runtime/gpu_test_utils.h b/xla/backends/gpu/runtime/gpu_test_utils.h
+new file mode 100644
+index 0000000000..74fe2da628
+--- /dev/null
++++ b/xla/backends/gpu/runtime/gpu_test_utils.h
+@@ -0,0 +1,31 @@
++/* Copyright 2026 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#ifndef XLA_BACKENDS_GPU_RUNTIME_GPU_TEST_UTILS_H_
++#define XLA_BACKENDS_GPU_RUNTIME_GPU_TEST_UTILS_H_
++
++#include "xla/stream_executor/stream_executor.h"
++
++namespace xla::gpu {
++
++inline bool IsUnsupportedGpuExecutor(se::StreamExecutor* executor) {
++  return executor->GetDeviceDescription()
++      .gpu_compute_capability()
++      .oneapi_compute_capability();
++}
++
++}  // namespace xla::gpu
++
++#endif  // XLA_BACKENDS_GPU_RUNTIME_GPU_TEST_UTILS_H_
+diff --git a/xla/backends/gpu/runtime/host_execute_thunk_test.cc b/xla/backends/gpu/runtime/host_execute_thunk_test.cc
+index 0b5661aedd..43bf5c3492 100644
+--- a/xla/backends/gpu/runtime/host_execute_thunk_test.cc
++++ b/xla/backends/gpu/runtime/host_execute_thunk_test.cc
+@@ -194,10 +194,10 @@ TEST(HostExecuteStartThunkTest, SingleArgSingleResult) {
+ 
+ TEST(HostExecuteStartThunkTest, RecordCommandBufferSingleArgSingleResult) {
+   se::StreamExecutor* stream_executor = GpuExecutor();
+-  if (stream_executor->GetDeviceDescription()
+-          .gpu_compute_capability()
+-          .IsRocm()) {
+-    GTEST_SKIP() << "Not supported on ROCM yet.";
++  auto gpu_compute_capability =
++      stream_executor->GetDeviceDescription().gpu_compute_capability();
++  if (gpu_compute_capability.IsRocm() || gpu_compute_capability.IsOneAPI()) {
++    GTEST_SKIP() << "Command buffers are not supported on ROCM/oneAPI yet.";
+   }
+ 
+   ASSERT_OK_AND_ASSIGN(auto stream, stream_executor->CreateStream());
+diff --git a/xla/backends/gpu/runtime/legacy_custom_call_thunk_test.cc b/xla/backends/gpu/runtime/legacy_custom_call_thunk_test.cc
+index b3ab823328..c628c6c6ce 100644
+--- a/xla/backends/gpu/runtime/legacy_custom_call_thunk_test.cc
++++ b/xla/backends/gpu/runtime/legacy_custom_call_thunk_test.cc
+@@ -32,6 +32,7 @@ limitations under the License.
+ #include "absl/strings/string_view.h"
+ #include "xla/backends/gpu/runtime/command.h"
+ #include "xla/backends/gpu/runtime/command_state.h"
++#include "xla/backends/gpu/runtime/gpu_test_utils.h"
+ #include "xla/backends/gpu/runtime/thunk.h"
+ #include "xla/backends/gpu/runtime/thunk.pb.h"
+ #include "xla/backends/gpu/runtime/thunk_test_utils.h"
+@@ -207,6 +208,10 @@ static LegacyCustomCallThunk::CustomCallTarget MakeCopyCallTarget() {
+ 
+ TEST(LegacyCustomCallThunkTest, RecordCommandBuffer) {
+   ASSERT_OK_AND_ASSIGN(se::StreamExecutor * executor, GpuExecutor());
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(std::unique_ptr<se::Stream> stream,
+                        executor->CreateStream());
+ 
+@@ -260,6 +265,10 @@ TEST(LegacyCustomCallThunkTest, RecordCommandBuffer) {
+ 
+ TEST(LegacyCustomCallThunkTest, RecordCommandBufferUpdate) {
+   ASSERT_OK_AND_ASSIGN(se::StreamExecutor * executor, GpuExecutor());
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(std::unique_ptr<se::Stream> stream,
+                        executor->CreateStream());
+ 
+diff --git a/xla/backends/gpu/runtime/memset_thunk_test.cc b/xla/backends/gpu/runtime/memset_thunk_test.cc
+index d04f70488c..ebd70a4d72 100644
+--- a/xla/backends/gpu/runtime/memset_thunk_test.cc
++++ b/xla/backends/gpu/runtime/memset_thunk_test.cc
+@@ -25,6 +25,7 @@ limitations under the License.
+ #include "absl/strings/ascii.h"
+ #include "xla/backends/gpu/runtime/command.h"
+ #include "xla/backends/gpu/runtime/command_state.h"
++#include "xla/backends/gpu/runtime/gpu_test_utils.h"
+ #include "xla/backends/gpu/runtime/thunk.h"
+ #include "xla/backends/gpu/runtime/thunk.pb.h"
+ #include "xla/backends/gpu/runtime/thunk_test_utils.h"
+@@ -118,6 +119,10 @@ TEST(Memset32BitValueThunkTest, ProtoRoundTrip) {
+ 
+ TEST(MemzeroThunkTest, RecordCommandBuffer) {
+   se::StreamExecutor* executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   int64_t length = 4;
+@@ -163,6 +168,10 @@ TEST(MemzeroThunkTest, RecordCommandBuffer) {
+ // and re-submits to verify the same command node is reused.
+ TEST(MemzeroThunkTest, RecordCommandBufferUpdate) {
+   se::StreamExecutor* executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   int64_t length = 4;
+@@ -231,6 +240,10 @@ TEST(MemzeroThunkTest, RecordCommandBufferUpdate) {
+ 
+ TEST(Memset32BitValueThunkTest, RecordCommandBuffer) {
+   se::StreamExecutor* executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   int64_t length = 4;
+@@ -275,6 +288,10 @@ TEST(Memset32BitValueThunkTest, RecordCommandBuffer) {
+ // and re-submits to verify the same command node is reused.
+ TEST(Memset32BitValueThunkTest, RecordCommandBufferUpdate) {
+   se::StreamExecutor* executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   int64_t length = 4;
+diff --git a/xla/backends/gpu/runtime/record_ffi_test.cc b/xla/backends/gpu/runtime/record_ffi_test.cc
+index 8892169276..1bc65c435f 100644
+--- a/xla/backends/gpu/runtime/record_ffi_test.cc
++++ b/xla/backends/gpu/runtime/record_ffi_test.cc
+@@ -200,6 +200,14 @@ TEST(RecordFfiTest, KernelLaunchWithCuFunc) {
+   if (cuda_cc && !cuda_cc->IsAtLeastAmpere()) {
+     GTEST_SKIP() << "Skipping test for compute capability less than Ampere.";
+   }
++  // TODO(intel-tf): Remove this check once oneAPI command buffers are
++  // implemented.
++  if (executor->GetDeviceDescription()
++          .gpu_compute_capability()
++          .oneapi_compute_capability()) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+ 
+   ASSERT_OK_AND_ASSIGN(KernelBinary binary, GetKernelSpec());
+   absl::StatusOr<void*> func_ptr =
+diff --git a/xla/backends/gpu/runtime/replica_id_thunk_test.cc b/xla/backends/gpu/runtime/replica_id_thunk_test.cc
+index 4e22341d40..f7b4a97d0c 100644
+--- a/xla/backends/gpu/runtime/replica_id_thunk_test.cc
++++ b/xla/backends/gpu/runtime/replica_id_thunk_test.cc
+@@ -29,6 +29,7 @@ limitations under the License.
+ #include "xla/backends/gpu/runtime/collective_params.h"
+ #include "xla/backends/gpu/runtime/command.h"
+ #include "xla/backends/gpu/runtime/command_state.h"
++#include "xla/backends/gpu/runtime/gpu_test_utils.h"
+ #include "xla/backends/gpu/runtime/thunk.h"
+ #include "xla/backends/gpu/runtime/thunk.pb.h"
+ #include "xla/backends/gpu/runtime/thunk_test_utils.h"
+@@ -219,6 +220,10 @@ TEST(PartitionIdThunkTest, ExecuteOnStream) {
+ 
+ TEST(ReplicaIdThunkTest, RecordCommandBuffer) {
+   se::StreamExecutor* executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   se::DeviceAddress<uint32_t> dest = executor->AllocateArray<uint32_t>(1, 0);
+@@ -279,6 +284,10 @@ TEST(ReplicaIdThunkTest, RecordCommandBuffer) {
+ // Records into a command buffer, submits, then updates and re-submits.
+ TEST(ReplicaIdThunkTest, RecordCommandBufferUpdate) {
+   se::StreamExecutor* executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   se::DeviceAddress<uint32_t> dest = executor->AllocateArray<uint32_t>(1, 0);
+@@ -349,6 +358,10 @@ TEST(ReplicaIdThunkTest, RecordCommandBufferUpdate) {
+ 
+ TEST(PartitionIdThunkTest, RecordCommandBuffer) {
+   se::StreamExecutor* executor = GpuExecutor();
++  if (IsUnsupportedGpuExecutor(executor)) {
++    GTEST_SKIP() << "Skipping test because command buffers are not implemented "
++                    "for oneAPI backend yet";
++  }
+   ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+ 
+   se::DeviceAddress<uint32_t> dest = executor->AllocateArray<uint32_t>(1, 0);
+diff --git a/xla/backends/gpu/transforms/BUILD b/xla/backends/gpu/transforms/BUILD
+index 6b7565a2e0..199fc202fc 100644
+--- a/xla/backends/gpu/transforms/BUILD
++++ b/xla/backends/gpu/transforms/BUILD
+@@ -2353,17 +2353,23 @@ cc_library(
+         "oneapi-only",
+     ],
+     deps = [
++        "//xla:literal_util",
+         "//xla:shape_util",
+         "//xla:xla_data_proto_cc",
+         "//xla/hlo/ir:hlo",
+         "//xla/hlo/pass:hlo_pass",
+         "//xla/service/gpu:backend_configs_cc",
+         "//xla/service/gpu:cublas_cudnn",
++        "//xla/service/gpu:gpu_conv_runner",
+         "//xla/service/gpu:matmul_utils",
++        "//xla/service/gpu:stream_executor_util",
+         "//xla/stream_executor:device_description",
++        "//xla/stream_executor:dnn",
++        "//xla/stream_executor/sycl:sycl_conv_utils",
+         "//xla/stream_executor/sycl:sycl_matmul_utils",
+         "@com_google_absl//absl/container:flat_hash_set",
+         "@com_google_absl//absl/log",
++        "@com_google_absl//absl/status",
+         "@com_google_absl//absl/status:status_macros",
+         "@com_google_absl//absl/status:statusor",
+         "@com_google_absl//absl/strings:string_view",
+diff --git a/xla/backends/gpu/transforms/sort_rewriter.cc b/xla/backends/gpu/transforms/sort_rewriter.cc
+index 74ea3aff08..e4c87c9a0a 100644
+--- a/xla/backends/gpu/transforms/sort_rewriter.cc
++++ b/xla/backends/gpu/transforms/sort_rewriter.cc
+@@ -700,6 +700,17 @@ absl::StatusOr<bool> DevicelessTableHasDataForSort(
+                           params.num_items, params.batch_size);
+ }
+ 
++// Returns whether `sort_op`'s comparator is a TOTALORDER floating-point
++// compare. Unlike the default float order, TOTALORDER distinguishes
++// -0.0 < +0.0.
++bool IsTotalOrderFloatSort(const HloSortInstruction& sort_op) {
++  const auto* compare =
++      DynCast<HloCompareInstruction>(sort_op.to_apply()->root_instruction());
++  return compare != nullptr && compare->order() == ComparisonOrder::kTotal &&
++         primitive_util::IsFloatingPointType(
++             compare->operand(0)->shape().element_type());
++}
++
+ bool IsCubCompatibleSort(const se::DeviceDescription& device_description,
+                          const HloSortInstruction* sort_op) {
+   VLOG(1) << "Sort instruction: " << sort_op->name();
+@@ -731,6 +742,17 @@ bool IsCubCompatibleSort(const se::DeviceDescription& device_description,
+     VLOG(2) << "Only simple compare computations are supported";
+     return false;
+   }
++  // On oneAPI the CUB sort is oneDPL's radix sort, which gives -0.0 and +0.0
++  // the same key. With TOTALORDER that misorders the values the keys are
++  // sorted with, e.g. TopK's indices, so keep TOTALORDER f32 pair sorts on
++  // XLA's sort.
++  if (device_description.gpu_compute_capability().IsOneAPI() &&
++      sort_op->operand_count() == 2 &&
++      sort_analysis->sort_order == SortOrderType::kDefaultOrder &&
++      sort_analysis->key_type == F32 && IsTotalOrderFloatSort(*sort_op)) {
++    VLOG(2) << "TOTALORDER f32 pair sorts are not supported by the oneAPI sort";
++    return false;
++  }
+   if (!AreOperandTypesSupportedByCub(*sort_analysis)) {
+     VLOG(2) << "Unsupported operand types (no compiled CUB kernels): "
+             << PrimitiveType_Name(sort_analysis->key_type) << " "
+diff --git a/xla/backends/gpu/transforms/sycl_gemm_workspace_pass.cc b/xla/backends/gpu/transforms/sycl_gemm_workspace_pass.cc
+index 5c6e324976..636344a473 100644
+--- a/xla/backends/gpu/transforms/sycl_gemm_workspace_pass.cc
++++ b/xla/backends/gpu/transforms/sycl_gemm_workspace_pass.cc
+@@ -21,18 +21,26 @@ limitations under the License.
+ 
+ #include "absl/container/flat_hash_set.h"
+ #include "absl/log/log.h"
++#include "absl/status/status.h"
+ #include "absl/status/status_macros.h"
+ #include "absl/status/statusor.h"
+ #include "absl/strings/string_view.h"
++#include "xla/hlo/ir/hlo_casting_utils.h"
+ #include "xla/hlo/ir/hlo_computation.h"
+ #include "xla/hlo/ir/hlo_instruction.h"
++#include "xla/hlo/ir/hlo_instructions.h"
+ #include "xla/hlo/ir/hlo_module.h"
++#include "xla/literal_util.h"
+ #include "xla/primitive_util.h"
+ #include "xla/service/gpu/backend_configs.pb.h"
+ #include "xla/service/gpu/cublas_cudnn.h"
++#include "xla/service/gpu/gpu_conv_runner.h"
+ #include "xla/service/gpu/matmul_utils.h"
++#include "xla/service/gpu/stream_executor_util.h"
+ #include "xla/shape.h"
+ #include "xla/shape_util.h"
++#include "xla/stream_executor/dnn.h"
++#include "xla/stream_executor/sycl/sycl_conv_utils.h"
+ #include "xla/stream_executor/sycl/sycl_matmul_utils.h"
+ #include "xla/xla_data.pb.h"
+ 
+@@ -40,7 +48,7 @@ namespace xla {
+ namespace gpu {
+ namespace {
+ 
+-absl::StatusOr<size_t> ComputeOneDnnScratchpadSize(
++absl::StatusOr<size_t> ComputeMatmulWorkspaceSize(
+     const HloInstruction* matmul_instr,
+     const se::GpuComputeCapability& gpu_version) {
+   ABSL_ASSIGN_OR_RETURN(GemmConfig gemm_config,
+@@ -49,54 +57,118 @@ absl::StatusOr<size_t> ComputeOneDnnScratchpadSize(
+                         matmul_instr->backend_config<GpuBackendConfig>());
+   const GemmBackendConfig& config = gpu_config.gemm_backend_config();
+   ABSL_ASSIGN_OR_RETURN(
+-      auto sycl_epilogue,
++      auto epilogue,
+       stream_executor::sycl::sycl_gemm::AsSYCLEpilogue(config.epilogue()));
+   ABSL_ASSIGN_OR_RETURN(
+       auto prim_desc, stream_executor::sycl::CreateMatMulPrimDescFromGemmConfig(
+-                          gemm_config, sycl_epilogue));
++                          gemm_config, epilogue));
+   return prim_desc->scratchpad_desc().get_size();
+ }
+ 
++// Builds the same oneDNN convolution config that the runtime runner builds
++// from this custom call, so that both agree on the workspace size.
++absl::StatusOr<size_t> ComputeConvWorkspaceSize(
++    const HloCustomCallInstruction* conv_instr) {
++  ABSL_ASSIGN_OR_RETURN(GpuConvConfig gpu_config, GetGpuConvConfig(conv_instr));
++  ABSL_ASSIGN_OR_RETURN(se::dnn::DataType input_type,
++                        GetDNNDataTypeFromPrimitiveType(gpu_config.input_type));
++  ABSL_ASSIGN_OR_RETURN(
++      se::dnn::DataType output_type,
++      GetDNNDataTypeFromPrimitiveType(gpu_config.output_type));
++  se::sycl::OneDnnConvConfig config{CudnnConvKindToProto(gpu_config.kind),
++                                    input_type,
++                                    output_type,
++                                    gpu_config.input_descriptor,
++                                    gpu_config.filter_descriptor,
++                                    gpu_config.output_descriptor,
++                                    gpu_config.conv_desc,
++                                    gpu_config.conv_result_scale};
++  if (gpu_config.fusion.has_value()) {
++    config.fusion = se::sycl::OneDnnConvConfig::Fusion{
++        gpu_config.fusion->mode, gpu_config.fusion->side_input_scale,
++        gpu_config.fusion->leakyrelu_alpha};
++  }
++  return se::sycl::ComputeOneDnnConvWorkspaceSize(config);
++}
++
++// Matmul workspaces are never read after the call, so their shape is resized
++// in place.
++void ResizeMatmulWorkspace(HloInstruction* matmul_instr, int64_t new_bytes) {
++  Shape* shape = matmul_instr->mutable_shape();
++  *shape->mutable_tuple_shapes(shape->tuple_shapes().size() - 1) =
++      ShapeUtil::MakeShape(S8, {new_bytes});
++}
++
++// A conv workspace can be read, e.g. by a root tuple from layout
++// normalization. As the cuDNN autotuner does, clone the call with the new
++// workspace and repackage it with the original shape, (conv_result, u8[0]).
++absl::Status ResizeConvWorkspace(HloInstruction* conv_instr,
++                                 int64_t new_bytes) {
++  HloComputation* computation = conv_instr->parent();
++  const Shape& old_shape = conv_instr->shape();
++  const int64_t workspace_index = old_shape.tuple_shapes().size() - 1;
++  Shape new_shape = old_shape;
++  *new_shape.mutable_tuple_shapes(workspace_index) =
++      ShapeUtil::MakeShape(U8, {new_bytes});
++  HloInstruction* new_call = computation->AddInstruction(
++      conv_instr->CloneWithNewOperands(new_shape, conv_instr->operands()));
++  new_call->SetAndSanitizeName(conv_instr->name());
++
++  std::vector<HloInstruction*> new_tuple_elements;
++  for (int64_t i = 0; i < workspace_index; ++i) {
++    new_tuple_elements.push_back(
++        computation->AddInstruction(HloInstruction::CreateGetTupleElement(
++            new_shape.tuple_shapes(i), new_call, i)));
++  }
++  new_tuple_elements.push_back(computation->AddInstruction(
++      HloInstruction::CreateConstant(LiteralUtil::CreateR1<uint8_t>({}))));
++  HloInstruction* new_tuple = computation->AddInstruction(
++      HloInstruction::CreateTuple(new_tuple_elements));
++  return computation->ReplaceInstruction(conv_instr, new_tuple);
++}
++
+ }  // namespace
+ 
+-absl::StatusOr<bool> SyclGemmWorkspacePass::RunImpl(
++absl::StatusOr<bool> SyclOneDnnWorkspacePass::RunImpl(
+     HloModule* module,
+     const absl::flat_hash_set<absl::string_view>& execution_threads) {
+-  // Resizes the trailing S8 workspace element of the matmul custom call's
+-  // tuple shape in place. As the workspace is consumed only by the custom
+-  // call at runtime, downstream get-tuple-element users require no update.
+-  auto resize_workspace = [](HloInstruction* matmul_instr, int64_t new_bytes) {
+-    Shape* shape = matmul_instr->mutable_shape();
+-    *shape->mutable_tuple_shapes(shape->tuple_shapes().size() - 1) =
+-        ShapeUtil::MakeShape(S8, {new_bytes});
+-  };
+-
+   bool changed = false;
+   for (HloComputation* computation :
+        module->MakeNonfusionComputations(execution_threads)) {
+-    for (HloInstruction* matmul_instr : computation->instructions()) {
+-      if (!IsCublasLtMatmul(*matmul_instr)) {
+-        continue;
+-      }
+-      const Shape& matmul_shape = matmul_instr->shape();
+-      if (!matmul_shape.IsTuple() || matmul_shape.tuple_shapes().size() != 2) {
+-        continue;
+-      }
+-      // oneDNN's matmul primitive does not support complex element types.
+-      if (primitive_util::IsComplexType(
+-              matmul_instr->shape().tuple_shapes(0).element_type())) {
+-        continue;
+-      }
+-      auto scratchpad_or =
+-          ComputeOneDnnScratchpadSize(matmul_instr, gpu_version_);
+-      if (!scratchpad_or.ok()) {
+-        VLOG(1) << "Failed to compute OneDNN scratchpad size for "
+-                << matmul_instr->custom_call_target() << ": "
+-                << scratchpad_or.status().message();
+-        continue;
++    // Iterates over a copy, since resizing a conv replaces the instruction.
++    for (HloInstruction* instr : computation->MakeInstructionPostOrder()) {
++      if (IsCublasLtMatmul(*instr)) {
++        // oneDNN's matmul primitive does not support complex element types.
++        const Shape& shape = instr->shape();
++        if (shape.tuple_shapes().size() != 2 ||
++            primitive_util::IsComplexType(
++                shape.tuple_shapes(0).element_type())) {
++          continue;
++        }
++        absl::StatusOr<size_t> size =
++            ComputeMatmulWorkspaceSize(instr, gpu_version_);
++        if (!size.ok()) {
++          VLOG(1) << "Failed to compute oneDNN workspace size for "
++                  << instr->name() << ": " << size.status().message();
++          continue;
++        }
++        ResizeMatmulWorkspace(instr, *size);
++        changed = true;
++      } else if (IsCustomCallToDnnConvolution(*instr)) {
++        absl::StatusOr<size_t> size =
++            ComputeConvWorkspaceSize(Cast<HloCustomCallInstruction>(instr));
++        if (!size.ok()) {
++          VLOG(1) << "Failed to compute oneDNN workspace size for "
++                  << instr->name() << ": " << size.status().message();
++          continue;
++        }
++        // ConvRewriter already creates the workspace as u8[0].
++        if (*size == 0) {
++          continue;
++        }
++        ABSL_RETURN_IF_ERROR(ResizeConvWorkspace(instr, *size));
++        changed = true;
+       }
+-      resize_workspace(matmul_instr, static_cast<int64_t>(*scratchpad_or));
+-      changed = true;
+     }
+   }
+   return changed;
+diff --git a/xla/backends/gpu/transforms/sycl_gemm_workspace_pass.h b/xla/backends/gpu/transforms/sycl_gemm_workspace_pass.h
+index b310ab9cef..b349282589 100644
+--- a/xla/backends/gpu/transforms/sycl_gemm_workspace_pass.h
++++ b/xla/backends/gpu/transforms/sycl_gemm_workspace_pass.h
+@@ -26,16 +26,16 @@ limitations under the License.
+ namespace xla {
+ namespace gpu {
+ 
+-// Resizes the cuBLASLt matmul workspace to the size oneDNN's matmul primitive
+-// requires for its scratchpad (oneDNN's term for workspace).
+-// Added only by IntelGpuCompiler, after the generic GPU post-layout-assignment
+-// pipeline.
+-class SyclGemmWorkspacePass : public HloModulePass {
++// Resizes the workspace of cuBLASLt matmul and DNN convolution custom calls to
++// what the oneDNN primitive behind them needs at run time. For matmul that is
++// the scratchpad; for convolution it is the scratchpad plus the pre-packed
++// filter. Added only by IntelGpuCompiler, after layout assignment.
++class SyclOneDnnWorkspacePass : public HloModulePass {
+  public:
+-  explicit SyclGemmWorkspacePass(se::GpuComputeCapability gpu_version)
++  explicit SyclOneDnnWorkspacePass(se::GpuComputeCapability gpu_version)
+       : gpu_version_(gpu_version) {}
+ 
+-  absl::string_view name() const override { return "sycl-gemm-workspace"; }
++  absl::string_view name() const override { return "sycl-onednn-workspace"; }
+ 
+  protected:
+   absl::StatusOr<bool> RunImpl(
+diff --git a/xla/backends/gpu/transforms/sycl_onednn_workspace_pass.cc b/xla/backends/gpu/transforms/sycl_onednn_workspace_pass.cc
+new file mode 100644
+index 0000000000..c45f6c2cac
+--- /dev/null
++++ b/xla/backends/gpu/transforms/sycl_onednn_workspace_pass.cc
+@@ -0,0 +1,178 @@
++/* Copyright 2026 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#include "xla/backends/gpu/transforms/sycl_onednn_workspace_pass.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++#include "absl/container/flat_hash_set.h"
++#include "absl/log/log.h"
++#include "absl/status/status.h"
++#include "absl/status/status_macros.h"
++#include "absl/status/statusor.h"
++#include "absl/strings/string_view.h"
++#include "xla/hlo/ir/hlo_casting_utils.h"
++#include "xla/hlo/ir/hlo_computation.h"
++#include "xla/hlo/ir/hlo_instruction.h"
++#include "xla/hlo/ir/hlo_instructions.h"
++#include "xla/hlo/ir/hlo_module.h"
++#include "xla/literal_util.h"
++#include "xla/primitive_util.h"
++#include "xla/service/gpu/backend_configs.pb.h"
++#include "xla/service/gpu/cublas_cudnn.h"
++#include "xla/service/gpu/gpu_conv_runner.h"
++#include "xla/service/gpu/matmul_utils.h"
++#include "xla/service/gpu/stream_executor_util.h"
++#include "xla/shape.h"
++#include "xla/shape_util.h"
++#include "xla/stream_executor/dnn.h"
++#include "xla/stream_executor/sycl/sycl_conv_utils.h"
++#include "xla/stream_executor/sycl/sycl_matmul_utils.h"
++#include "xla/xla_data.pb.h"
++
++namespace xla {
++namespace gpu {
++namespace {
++
++absl::StatusOr<size_t> ComputeMatmulWorkspaceSize(
++    const HloInstruction* matmul_instr,
++    const se::GpuComputeCapability& gpu_version) {
++  ABSL_ASSIGN_OR_RETURN(GemmConfig gemm_config,
++                        GemmConfig::For(matmul_instr, gpu_version));
++  ABSL_ASSIGN_OR_RETURN(GpuBackendConfig gpu_config,
++                        matmul_instr->backend_config<GpuBackendConfig>());
++  const GemmBackendConfig& config = gpu_config.gemm_backend_config();
++  ABSL_ASSIGN_OR_RETURN(
++      auto epilogue,
++      stream_executor::sycl::sycl_gemm::AsSYCLEpilogue(config.epilogue()));
++  ABSL_ASSIGN_OR_RETURN(
++      auto prim_desc, stream_executor::sycl::CreateMatMulPrimDescFromGemmConfig(
++                          gemm_config, epilogue));
++  return prim_desc->scratchpad_desc().get_size();
++}
++
++// Builds the same oneDNN convolution config that the runtime runner builds
++// from this custom call, so that both agree on the workspace size.
++absl::StatusOr<size_t> ComputeConvWorkspaceSize(
++    const HloCustomCallInstruction* conv_instr) {
++  ABSL_ASSIGN_OR_RETURN(GpuConvConfig gpu_config, GetGpuConvConfig(conv_instr));
++  ABSL_ASSIGN_OR_RETURN(se::dnn::DataType input_type,
++                        GetDNNDataTypeFromPrimitiveType(gpu_config.input_type));
++  ABSL_ASSIGN_OR_RETURN(
++      se::dnn::DataType output_type,
++      GetDNNDataTypeFromPrimitiveType(gpu_config.output_type));
++  se::sycl::OneDnnConvConfig config{CudnnConvKindToProto(gpu_config.kind),
++                                    input_type,
++                                    output_type,
++                                    gpu_config.input_descriptor,
++                                    gpu_config.filter_descriptor,
++                                    gpu_config.output_descriptor,
++                                    gpu_config.conv_desc,
++                                    gpu_config.conv_result_scale};
++  if (gpu_config.fusion.has_value()) {
++    config.fusion = se::sycl::OneDnnConvConfig::Fusion{
++        gpu_config.fusion->mode, gpu_config.fusion->side_input_scale,
++        gpu_config.fusion->leakyrelu_alpha};
++  }
++  return se::sycl::ComputeOneDnnConvWorkspaceSize(config);
++}
++
++// Matmul workspaces are never read after the call, so their shape is resized
++// in place.
++void ResizeMatmulWorkspace(HloInstruction* matmul_instr, int64_t new_bytes) {
++  Shape* shape = matmul_instr->mutable_shape();
++  *shape->mutable_tuple_shapes(shape->tuple_shapes().size() - 1) =
++      ShapeUtil::MakeShape(S8, {new_bytes});
++}
++
++// A conv workspace can be read, e.g. by a root tuple from layout
++// normalization. As the cuDNN autotuner does, clone the call with the new
++// workspace and repackage it with the original shape, (conv_result, u8[0]).
++absl::Status ResizeConvWorkspace(HloInstruction* conv_instr,
++                                 int64_t new_bytes) {
++  HloComputation* computation = conv_instr->parent();
++  const Shape& old_shape = conv_instr->shape();
++  const int64_t workspace_index = old_shape.tuple_shapes().size() - 1;
++  Shape new_shape = old_shape;
++  *new_shape.mutable_tuple_shapes(workspace_index) =
++      ShapeUtil::MakeShape(U8, {new_bytes});
++  HloInstruction* new_call = computation->AddInstruction(
++      conv_instr->CloneWithNewOperands(new_shape, conv_instr->operands()));
++  new_call->SetAndSanitizeName(conv_instr->name());
++
++  std::vector<HloInstruction*> new_tuple_elements;
++  for (int64_t i = 0; i < workspace_index; ++i) {
++    new_tuple_elements.push_back(
++        computation->AddInstruction(HloInstruction::CreateGetTupleElement(
++            new_shape.tuple_shapes(i), new_call, i)));
++  }
++  new_tuple_elements.push_back(computation->AddInstruction(
++      HloInstruction::CreateConstant(LiteralUtil::CreateR1<uint8_t>({}))));
++  HloInstruction* new_tuple = computation->AddInstruction(
++      HloInstruction::CreateTuple(new_tuple_elements));
++  return computation->ReplaceInstruction(conv_instr, new_tuple);
++}
++
++}  // namespace
++
++absl::StatusOr<bool> SyclOneDnnWorkspacePass::RunImpl(
++    HloModule* module,
++    const absl::flat_hash_set<absl::string_view>& execution_threads) {
++  bool changed = false;
++  for (HloComputation* computation :
++       module->MakeNonfusionComputations(execution_threads)) {
++    // Iterates over a copy, since resizing a conv replaces the instruction.
++    for (HloInstruction* instr : computation->MakeInstructionPostOrder()) {
++      if (IsCublasLtMatmul(*instr)) {
++        // oneDNN's matmul primitive does not support complex element types.
++        const Shape& shape = instr->shape();
++        if (shape.tuple_shapes().size() != 2 ||
++            primitive_util::IsComplexType(
++                shape.tuple_shapes(0).element_type())) {
++          continue;
++        }
++        absl::StatusOr<size_t> size =
++            ComputeMatmulWorkspaceSize(instr, gpu_version_);
++        if (!size.ok()) {
++          VLOG(1) << "Failed to compute oneDNN workspace size for "
++                  << instr->name() << ": " << size.status().message();
++          continue;
++        }
++        ResizeMatmulWorkspace(instr, *size);
++        changed = true;
++      } else if (IsCustomCallToDnnConvolution(*instr)) {
++        absl::StatusOr<size_t> size =
++            ComputeConvWorkspaceSize(Cast<HloCustomCallInstruction>(instr));
++        if (!size.ok()) {
++          VLOG(1) << "Failed to compute oneDNN workspace size for "
++                  << instr->name() << ": " << size.status().message();
++          continue;
++        }
++        // ConvRewriter already creates the workspace as u8[0].
++        if (*size == 0) {
++          continue;
++        }
++        ABSL_RETURN_IF_ERROR(ResizeConvWorkspace(instr, *size));
++        changed = true;
++      }
++    }
++  }
++  return changed;
++}
++
++}  // namespace gpu
++}  // namespace xla
+diff --git a/xla/codegen/emitters/transforms/lowering_utils.cc b/xla/codegen/emitters/transforms/lowering_utils.cc
+index d0f46358dd..331299ebff 100644
+--- a/xla/codegen/emitters/transforms/lowering_utils.cc
++++ b/xla/codegen/emitters/transforms/lowering_utils.cc
+@@ -90,6 +90,29 @@ mlir::Value EmitFloatToIntConvertWithClamping(
+     mlir::FloatType src_fp_element_ty, mlir::IntegerType dst_element_ty,
+     mlir::Type src_ty, mlir::Type dst_ty) {
+   mlir::Location loc = builder.getLoc();
++
++  if (src_fp_element_ty.isBF16()) {
++    mlir::Type i16_type = builder.getIntegerType(16);
++    mlir::Type i32_type = builder.getIntegerType(32);
++    mlir::Type f32_type = builder.getF32Type();
++    if (auto shaped_ty = mlir::dyn_cast<mlir::ShapedType>(src_ty)) {
++      i16_type = shaped_ty.clone(builder.getIntegerType(16));
++      i32_type = shaped_ty.clone(builder.getIntegerType(32));
++      f32_type = shaped_ty.clone(builder.getF32Type());
++    }
++    mlir::Value bits16 =
++        mlir::arith::BitcastOp::create(builder, loc, i16_type, value);
++    mlir::Value bits32 =
++        mlir::arith::ExtUIOp::create(builder, loc, i32_type, bits16);
++    mlir::Value shift =
++        GetConstant(builder, i32_type, builder.getIntegerType(32), 16);
++    mlir::Value shifted =
++        mlir::arith::ShLIOp::create(builder, loc, bits32, shift);
++    value = mlir::arith::BitcastOp::create(builder, loc, f32_type, shifted);
++    src_fp_element_ty = builder.getF32Type();
++    src_ty = f32_type;
++  }
++
+   if (dst_element_ty.isInteger(1)) {
+     mlir::Value zero = GetConstant(builder, src_ty, src_fp_element_ty, 0);
+     return mlir::arith::CmpFOp::create(
+diff --git a/xla/hlo/transforms/simplifiers/BUILD b/xla/hlo/transforms/simplifiers/BUILD
+index de6a6b8366..78e59af925 100644
+--- a/xla/hlo/transforms/simplifiers/BUILD
++++ b/xla/hlo/transforms/simplifiers/BUILD
+@@ -1794,6 +1794,7 @@ cc_library(
+         "//xla/hlo/ir:hlo",
+         "//xla/hlo/pass:hlo_pass",
+         "//xla/hlo/utils:hlo_query",
++        "//xla/service:call_inliner",
+         "//xla/service:hlo_proto_cc",
+         "//xla/tsl/platform:errors",
+         "//xla/tsl/platform:statusor",
+diff --git a/xla/hlo/transforms/simplifiers/reduce_window_rewriter.cc b/xla/hlo/transforms/simplifiers/reduce_window_rewriter.cc
+index b5805e0a5b..ba669b0620 100644
+--- a/xla/hlo/transforms/simplifiers/reduce_window_rewriter.cc
++++ b/xla/hlo/transforms/simplifiers/reduce_window_rewriter.cc
+@@ -42,6 +42,7 @@ limitations under the License.
+ #include "xla/hlo/transforms/simplifiers/reduce_window_util.h"
+ #include "xla/hlo/utils/hlo_query.h"
+ #include "xla/literal_util.h"
++#include "xla/service/call_inliner.h"
+ #include "xla/service/hlo.pb.h"
+ #include "xla/shape.h"
+ #include "xla/shape_util.h"
+@@ -793,6 +794,9 @@ static absl::StatusOr<bool> TryOptimizeAssociativeScan(
+   builder.AddInstruction(HloInstruction::CreateGetTupleElement(call, 1));
+   HloComputation* rw_to_apply =
+       parent->parent()->AddEmbeddedComputation(builder.Build());
++  // The emitter cannot compute indexing maps for the Call opcode. Hence, inline
++  // the created call.
++  ABSL_RETURN_IF_ERROR(CallInliner::Inline(call).status());
+ 
+   HloInstruction* result = nullptr;
+   HloInstruction* input = scan->inputs()[0];
+diff --git a/xla/service/gpu/BUILD b/xla/service/gpu/BUILD
+index b0371a6eb6..4b9860a72b 100644
+--- a/xla/service/gpu/BUILD
++++ b/xla/service/gpu/BUILD
+@@ -3976,6 +3976,7 @@ cc_library(
+         "//xla/backends/gpu/transforms:conv_rewriter",
+         "//xla/backends/gpu/transforms:cudnn_fused_conv_rewriter",
+         "//xla/backends/gpu/transforms:sycl_gemm_workspace_pass",
++        "//xla/backends/gpu/transforms:triangular_solve_rewriter",
+         "//xla/hlo/ir:hlo",
+         "//xla/hlo/pass:hlo_pass",
+         "//xla/hlo/pass:hlo_pass_pipeline",
+diff --git a/xla/service/gpu/gpu_compiler.cc b/xla/service/gpu/gpu_compiler.cc
+index bd9d29ca3b..d83149088b 100644
+--- a/xla/service/gpu/gpu_compiler.cc
++++ b/xla/service/gpu/gpu_compiler.cc
+@@ -791,6 +791,10 @@ Decision IsScaledDotSupportedByBackend(const HloInstruction* instr,
+       instr->GetModule()->config().debug_options();
+   const se::GpuComputeCapability& gpu_version =
+       gpu_target_config.device_description.gpu_compute_capability();
++  // TODO(intel-tf): Remove this once ScaledDot support is added in oneAPI.
++  if (gpu_version.IsOneAPI()) {
++    return Decision::Forbid("ScaledDot is not yet supported on oneAPI.");
++  }
+   // Both Triton and cuDNN are reached via the __triton_gemm fusion that
+   // GemmFusion creates for the autotuner.
+   if (!IsTritonGemmEnabled(debug_options, gpu_version)) {
+diff --git a/xla/service/gpu/intel_gpu_compiler.cc b/xla/service/gpu/intel_gpu_compiler.cc
+index 68301a86ee..fbf7c06173 100644
+--- a/xla/service/gpu/intel_gpu_compiler.cc
++++ b/xla/service/gpu/intel_gpu_compiler.cc
+@@ -21,6 +21,7 @@ limitations under the License.
+ #include "xla/backends/gpu/transforms/conv_rewriter.h"
+ #include "xla/backends/gpu/transforms/cudnn_fused_conv_rewriter.h"
+ #include "xla/backends/gpu/transforms/sycl_gemm_workspace_pass.h"
++#include "xla/backends/gpu/transforms/triangular_solve_rewriter.h"
+ #include "xla/hlo/ir/hlo_instruction.h"
+ #include "xla/hlo/pass/hlo_pass_fix.h"
+ #include "xla/hlo/pass/hlo_pass_pipeline.h"
+@@ -119,10 +120,15 @@ absl::Status IntelGpuCompiler::OptimizeHloPostLayoutAssignment(
+ 
+   HloPassPipeline post_pipeline("Intel GPU post-layout_assignment",
+                                 compilation_stats);
+-  post_pipeline.AddPass<SyclGemmWorkspacePass>(
++  post_pipeline.AddPass<SyclOneDnnWorkspacePass>(
+       gpu_topology.gpu_target_config()
+           .device_description.gpu_compute_capability());
+-  return post_pipeline.Run(hlo_module).status();
++  // Transform TriangularSolve ops into custom-calls.
++  post_pipeline.AddPass<TriangularSolveRewriter>();
++  ABSL_RETURN_IF_ERROR(
++      post_pipeline.Run(hlo_module, {HloInstruction::kMainExecutionThread})
++          .status());
++  return absl::OkStatus();
+ }
+ 
+ absl::Status IntelGpuCompiler::AddConfigAssignerPass(
+diff --git a/xla/service/gpu/intel_gpu_compiler_test.cc b/xla/service/gpu/intel_gpu_compiler_test.cc
+index d87a958ef2..b0871583c8 100644
+--- a/xla/service/gpu/intel_gpu_compiler_test.cc
++++ b/xla/service/gpu/intel_gpu_compiler_test.cc
+@@ -31,7 +31,7 @@ TEST_F(IntelGpuCompilerTest, CheckCompiler) {
+             stream_executor::sycl::kSyclPlatformId);
+ }
+ 
+-// Checks that SyclGemmWorkspacePass rewrites the cuBLASLt matmul workspace
++// Checks that SyclOneDnnWorkspacePass rewrites the cuBLASLt matmul workspace
+ // from the 4 MiB default to the oneDNN scratchpad size (0 for a tiny matmul).
+ TEST_F(IntelGpuCompilerTest, ResizesMatmulWorkspace) {
+   const char* hlo_text = R"(
+@@ -75,6 +75,76 @@ TEST_F(IntelGpuCompilerTest, SkipsWorkspaceResizeForComplexMatmul) {
+       hlo_text, absl::Substitute(check_pattern, GemmConfig::kDefaultWorkspace));
+ }
+ 
++// The filter layout here makes oneDNN pre-pack the filter, so the workspace
++// grows. Layout normalization returns the old workspace element through the
++// root tuple; that reader must keep the old shape for the module to verify.
++TEST_F(IntelGpuCompilerTest, ResizesConvWorkspaceReadByRootTuple) {
++  const char* hlo_text = R"(
++    HloModule conv
++
++    ENTRY main {
++      p0 = f32[2,128,1,378]{3,2,1,0} parameter(0)
++      p1 = f32[1,5,128,128]{1,0,2,3} parameter(1)
++      ROOT conv = (f32[2,128,1,378]{3,2,1,0}, u8[0]{0}) custom-call(p0, p1),
++        window={size=1x5 pad=0_0x2_2}, dim_labels=bf01_01io->bf01,
++        custom_call_target="__cudnn$convForward",
++        backend_config={"cudnn_conv_backend_config":{conv_result_scale:1}}
++    }
++  )";
++
++  const char* check_pattern = R"(
++    CHECK: (f32[2,1,378,128]{3,2,1,0}, u8[{{[1-9][0-9]*}}]{0}) custom-call
++    CHECK-SAME: custom_call_target="__cudnn$convForward"
++  )";
++  MatchOptimizedHlo(hlo_text, check_pattern);
++}
++
++// Checks that the convolution workspace, zero-sized by default, is resized to
++// a non-zero size. The autotuner does not run for convolutions on Intel GPU,
++// so only SyclOneDnnWorkspacePass can resize it.
++TEST_F(IntelGpuCompilerTest, ResizesConvWorkspace) {
++  const char* hlo_text = R"(
++    HloModule conv
++
++    ENTRY main {
++      input = f32[1,56,56,64] parameter(0)
++      filter = f32[3,3,64,64] parameter(1)
++      ROOT conv = f32[1,56,56,64] convolution(input, filter),
++        window={size=3x3 pad=1_1x1_1}, dim_labels=b01f_01io->b01f
++    }
++  )";
++
++  const char* check_pattern = R"(
++    CHECK: (f32[1,56,56,64]{3,2,1,0}, u8[{{[1-9][0-9]*}}]{0}) custom-call
++    CHECK-SAME: custom_call_target="__cudnn$convForward"
++  )";
++  MatchOptimizedHlo(hlo_text, check_pattern);
++}
++
++// Layouts are already normalized, so the convolution stays the entry root and
++// the computation result keeps its original workspace shape.
++TEST_F(IntelGpuCompilerTest, ResizesConvWorkspaceOfRootConv) {
++  const char* hlo_text = R"(
++    HloModule conv
++
++    ENTRY main {
++      p0 = f32[2,1,378,128]{3,2,1,0} parameter(0)
++      p1 = f32[128,1,5,128]{3,2,1,0} parameter(1)
++      ROOT conv = (f32[2,1,378,128]{3,2,1,0}, u8[0]{0}) custom-call(p0, p1),
++        window={size=1x5 pad=0_0x2_2}, dim_labels=b01f_o01i->b01f,
++        custom_call_target="__cudnn$convForward",
++        backend_config={"cudnn_conv_backend_config":{conv_result_scale:1}}
++    }
++  )";
++
++  const char* check_pattern = R"(
++    CHECK: (f32[2,1,378,128]{3,2,1,0}, u8[{{[1-9][0-9]*}}]{0}) custom-call
++    CHECK-SAME: custom_call_target="__cudnn$convForward"
++    CHECK: ROOT {{.*}} (f32[2,1,378,128]{3,2,1,0}, u8[0]{0}) tuple
++  )";
++  MatchOptimizedHlo(hlo_text, check_pattern);
++}
++
+ }  // namespace
+ }  // namespace gpu
+ }  // namespace xla
+diff --git a/xla/service/layout_assignment.cc b/xla/service/layout_assignment.cc
+index 4fcc69515e..5459bd4f4a 100644
+--- a/xla/service/layout_assignment.cc
++++ b/xla/service/layout_assignment.cc
+@@ -1709,6 +1709,15 @@ bool LayoutAssignment::CanOverrideOperandLayoutOnBufferOverride(
+   if (InstructionCanChangeLayoutInstance(user)) {
+     return false;
+   }
++  // The update operand (operand_no > 0) of a dynamic-update-slice is typically
++  // much smaller than operand 0, which is updated in place. Since the output
++  // and operands must share a layout, overriding the update's layout would
++  // relayout all of operand 0 and the result (e.g. a scanned KV cache whose
++  // parameter layout was chosen by the compiler) instead of the small update.
++  // Let operand 0 keep dictating the layout, as SetOperandLayout does.
++  if (user->opcode() == HloOpcode::kDynamicUpdateSlice && operand_no > 0) {
++    return false;
++  }
+   if (user->opcode() == HloOpcode::kConcatenate) {
+     const HloInstruction* operand = user->operand(operand_no);
+     for (int64_t i = 0; i < user->operand_count(); ++i) {
+diff --git a/xla/stream_executor/sycl/BUILD b/xla/stream_executor/sycl/BUILD
+index 9017739bcd..3f537a42a3 100644
+--- a/xla/stream_executor/sycl/BUILD
++++ b/xla/stream_executor/sycl/BUILD
+@@ -19,6 +19,7 @@
+ load(
+     "@local_config_sycl//sycl:build_defs.bzl",
+     "if_sycl_is_configured",
++    "sycl_default_copts",
+     "sycl_library",
+ )
+ load("//xla:xla.default.bzl", "xla_cc_test")
+@@ -101,11 +102,13 @@ cc_library(
+     copts = tsl_copts(),
+     visibility = ["//visibility:public"],
+     deps = if_sycl_is_configured([
++        ":cub_scan_kernel_sycl",
+         ":cub_sort_kernel_sycl",
+         ":make_batch_pointers_kernel_sycl",
+         ":sycl_platform",
+         ":sycl_blas_lt_plugin",
+         ":sycl_dnn",
++        ":sycl_fft",
+     ]),
+     alwayslink = 1,
+ )
+@@ -301,6 +304,7 @@ sycl_library(
+         "//xla/stream_executor:device_description",
+         "//xla/stream_executor:device_memory",
+         "//xla/stream_executor:dnn",
++        "//xla/stream_executor:fft",
+         "//xla/stream_executor:generic_memory_allocation",
+         "//xla/stream_executor:generic_memory_allocator",
+         "//xla/stream_executor:kernel",
+@@ -579,7 +583,10 @@ sycl_library(
+ 
+ sycl_library(
+     name = "sycl_blas_lt_plugin",
+-    srcs = ["sycl_blas_lt.cc"],
++    srcs = [
++        "onemkl_util.h",
++        "sycl_blas_lt.cc",
++    ],
+     hdrs = ["sycl_blas_lt.h"],
+     tags = [
+         "gpu",
+@@ -731,6 +738,37 @@ sycl_library(
+     alwayslink = True,
+ )
+ 
++sycl_library(
++    name = "sycl_fft",
++    srcs = [
++        "onemkl_util.h",
++        "sycl_fft.cc",
++    ],
++    hdrs = ["sycl_fft.h"],
++    tags = [
++        "gpu",
++        "oneapi-only",
++    ],
++    visibility = ["//visibility:public"],
++    deps = [
++        ":sycl_platform_id",
++        "//xla/stream_executor:device_address",
++        "//xla/stream_executor:fft",
++        "//xla/stream_executor:plugin_registry",
++        "//xla/stream_executor:scratch_allocator",
++        "//xla/stream_executor:stream",
++        "//xla/stream_executor:stream_executor_h",
++        "//xla/stream_executor/gpu:gpu_helpers_header",
++        "//xla/stream_executor/platform:initialize",
++        "@com_google_absl//absl/base",
++        "@com_google_absl//absl/log",
++        "@com_google_absl//absl/status",
++        "@com_google_absl//absl/status:statusor",
++        "@com_google_absl//absl/strings",
++    ],
++    alwayslink = True,
++)
++
+ sycl_library(
+     name = "sycl_matmul_utils",
+     srcs = ["sycl_matmul_utils.cc"],
+@@ -750,6 +788,31 @@ sycl_library(
+     ],
+ )
+ 
++xla_test(
++    name = "fft_sycl_test",
++    srcs = ["fft_sycl_test.cc"],
++    backends = ["gpu"],
++    tags = [
++        "gpu",
++        "oneapi-only",
++    ],
++    deps = [
++        "//xla:error_spec",
++        "//xla/stream_executor:blas",
++        "//xla/stream_executor:device_address",
++        "//xla/stream_executor:platform",
++        "//xla/stream_executor:platform_manager",
++        "//xla/stream_executor:stream",
++        "//xla/stream_executor:stream_executor_h",
++        "//xla/stream_executor/gpu:gpu_blas_lt",
++        "//xla/tests:hlo_pjrt_interpreter_reference_mixin",
++        "//xla/tests:hlo_test_base",
++        "//xla/tests:xla_internal_test_main",
++        "@com_google_absl//absl/strings:string_view",
++        "@com_google_googletest//:gtest",
++    ],
++)
++
+ xla_test(
+     name = "gemm_sycl_test",
+     srcs = ["gemm_sycl_test.cc"],
+@@ -776,6 +839,7 @@ xla_test(
+         "@com_google_absl//absl/status:status_matchers",
+         "@com_google_absl//absl/strings",
+         "@com_google_googletest//:gtest",
++
+     ],
+ )
+ 
+@@ -792,6 +856,7 @@ sycl_library(
+         "//xla:shape_util",
+         "//xla:util",
+         "//xla:xla_data_proto_cc",
++        "//xla/service/gpu:gpu_constants",
+         "//xla/stream_executor:device_address",
+         "//xla/stream_executor:dnn",
+         "//xla/stream_executor:stream",
+@@ -853,6 +918,77 @@ sycl_library(
+     alwayslink = True,
+ )
+ 
++sycl_library(
++    name = "cub_scan_kernel_sycl_impl",
++    srcs = ["cub_scan_kernel_sycl_impl.dp.cpp"],
++    hdrs = ["cub_scan_kernel_sycl.h"],
++    tags = [
++        "gpu",
++        "oneapi-only",
++    ],
++    deps = [
++        "//xla:status_macros",
++        "//xla:xla_data_proto_cc",
++        "@com_google_absl//absl/status",
++        "@com_google_absl//absl/status:status_macros",
++        "@com_google_absl//absl/status:statusor",
++        "@com_google_absl//absl/strings",
++        "@onedpl",
++    ],
++    alwayslink = 1,
++)
++
++sycl_library(
++    name = "cub_scan_kernel_sycl",
++    srcs = ["cub_scan_kernel_sycl.cc"],
++    hdrs = ["cub_scan_kernel_sycl.h"],
++    tags = [
++        "gpu",
++        "oneapi-only",
++    ],
++    deps = [
++        ":cub_scan_kernel_sycl_impl",
++        "//xla:xla_data_proto_cc",
++        "//xla/backends/gpu:ffi",
++        "//xla/ffi",
++        "//xla/ffi:ffi_api",
++        "//xla/service/gpu:cublas_cudnn",
++        "@com_google_absl//absl/status",
++        "@com_google_absl//absl/status:status_macros",
++        "@com_google_absl//absl/status:statusor",
++    ],
++    alwayslink = True,
++)
++
++xla_test(
++    name = "cub_scan_kernel_sycl_test",
++    srcs = ["cub_scan_kernel_sycl_test.cc"],
++    backends = ["gpu"],
++    copts = sycl_default_copts(),
++    tags = [
++        "gpu",
++        "oneapi-only",
++    ],
++    deps = [
++        ":cub_scan_kernel_sycl",
++        "//xla:shape_util",
++        "//xla:xla_data_proto_cc",
++        "//xla/stream_executor:device_address",
++        "//xla/stream_executor:platform",
++        "//xla/stream_executor:platform_manager",
++        "//xla/stream_executor:stream",
++        "//xla/stream_executor:stream_executor_h",
++        "@com_google_absl//absl/cleanup",
++        "@com_google_absl//absl/status",
++        "@com_google_absl//absl/status:status_macros",
++        "@com_google_absl//absl/status:status_matchers",
++        "@com_google_absl//absl/strings:str_format",
++        "@com_google_googletest//:gtest_main",
++    ] + if_sycl_is_configured([
++        "@local_config_sycl//sycl:sycl_headers",
++    ]),
++)
++
+ xla_test(
+     name = "conv_sycl_test",
+     srcs = ["conv_sycl_test.cc"],
+diff --git a/xla/stream_executor/sycl/cub_scan_kernel_sycl.cc b/xla/stream_executor/sycl/cub_scan_kernel_sycl.cc
+new file mode 100644
+index 0000000000..462b13eafe
+--- /dev/null
++++ b/xla/stream_executor/sycl/cub_scan_kernel_sycl.cc
+@@ -0,0 +1,110 @@
++/* Copyright 2026 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#include "xla/stream_executor/sycl/cub_scan_kernel_sycl.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <sycl/sycl.hpp>
++
++#include "absl/status/status.h"
++#include "absl/status/status_macros.h"
++#include "absl/status/statusor.h"
++#include "xla/backends/gpu/ffi.h"
++#include "xla/ffi/ffi.h"
++#include "xla/ffi/ffi_api.h"  // IWYU pragma: keep
++#include "xla/service/gpu/cublas_cudnn.h"
++#include "xla/xla_data.pb.h"
++
++XLA_FFI_REGISTER_ENUM_ATTR_DECODING(stream_executor::sycl::CubScanKind);
++XLA_FFI_REGISTER_ENUM_ATTR_DECODING(xla::PrimitiveType);
++
++namespace stream_executor::sycl {
++
++namespace {
++
++namespace ffi = ::xla::ffi;
++
++absl::Status CubScanLaunchKernelFfiHandler(
++    ffi::AnyBuffer d_in, ffi::Result<ffi::AnyBuffer> d_out,
++    ffi::Result<ffi::BufferR1<xla::U8>> d_temp_storage, int64_t vector_length,
++    int64_t row_length, int64_t column_length, CubScanKind kind,
++    bool is_reverse, ::sycl::queue* stream) {
++  ABSL_RETURN_IF_ERROR(
++      ffi::Verify("output", *d_out, ffi::match::Buffer().Like(d_in)));
++
++  return CubScanLaunchKernel(
++      d_in.element_type(), d_temp_storage->untyped_data(),
++      d_temp_storage->size_bytes(), d_in.untyped_data(), d_out->untyped_data(),
++      vector_length, row_length, column_length, kind, is_reverse, stream);
++}
++
++// Validates the scan at compile time, so unsupported scans fail before they
++// run.
++absl::StatusOr<std::unique_ptr<int64_t>> CubScanGetScratchSizeFfiHandler(
++    xla::PrimitiveType element_type, int64_t vector_length, int64_t row_length,
++    int64_t column_length, CubScanKind kind, bool is_reverse) {
++  ABSL_ASSIGN_OR_RETURN(
++      size_t temp_bytes,
++      CubScanGetScratchSize(element_type, vector_length, row_length,
++                            column_length, kind, is_reverse));
++  return std::make_unique<int64_t>(temp_bytes);
++}
++
++absl::Status CubScanDummyExecuteFfiHandler() {
++  return absl::InternalError("Dummy execute handler should not be called");
++}
++
++}  // namespace
++
++XLA_FFI_DEFINE_HANDLER(kCubScanExecute, CubScanLaunchKernelFfiHandler,
++                       ffi::Ffi::Bind()
++                           .Arg<ffi::AnyBuffer>()          // d_in
++                           .Ret<ffi::AnyBuffer>()          // d_out
++                           .Ret<ffi::BufferR1<xla::U8>>()  // d_temp_storage
++                           .Attr<int64_t>("vector_length")
++                           .Attr<int64_t>("row_length")
++                           .Attr<int64_t>("column_length")
++                           .Attr<CubScanKind>("kind")
++                           .Attr<bool>("is_reverse")
++                           .Ctx<ffi::PlatformStream<::sycl::queue*>>(),
++                       {ffi::Traits::kCmdBufferCompatible});
++
++XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(),
++                         xla::gpu::kCubDeviceScanTarget.data(), "SYCL",
++                         {/*instantiate=*/nullptr, /*prepare=*/nullptr,
++                          /*initialize=*/nullptr,
++                          /*execute=*/kCubScanExecute});
++
++XLA_FFI_DEFINE_HANDLER(kCubScanInstantiate, CubScanGetScratchSizeFfiHandler,
++                       ffi::Ffi::BindInstantiate()
++                           .Attr<xla::PrimitiveType>("element_type")
++                           .Attr<int64_t>("vector_length")
++                           .Attr<int64_t>("row_length")
++                           .Attr<int64_t>("column_length")
++                           .Attr<CubScanKind>("kind")
++                           .Attr<bool>("is_reverse"));
++
++XLA_FFI_DEFINE_HANDLER(kCubScanDummyExecute, CubScanDummyExecuteFfiHandler,
++                       ffi::Ffi::Bind());
++
++XLA_FFI_REGISTER_HANDLER(
++    ffi::GetXlaFfiApi(),
++    xla::gpu::kCubDeviceScanUnassignedScratchSizeTarget.data(), "SYCL",
++    {/*instantiate=*/kCubScanInstantiate, /*prepare=*/nullptr,
++     /*initialize=*/nullptr, /*execute=*/kCubScanDummyExecute});
++
++}  // namespace stream_executor::sycl
+diff --git a/xla/stream_executor/sycl/cub_scan_kernel_sycl.h b/xla/stream_executor/sycl/cub_scan_kernel_sycl.h
+new file mode 100644
+index 0000000000..db4c08af91
+--- /dev/null
++++ b/xla/stream_executor/sycl/cub_scan_kernel_sycl.h
+@@ -0,0 +1,52 @@
++/* Copyright 2026 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#ifndef XLA_STREAM_EXECUTOR_SYCL_CUB_SCAN_KERNEL_SYCL_H_
++#define XLA_STREAM_EXECUTOR_SYCL_CUB_SCAN_KERNEL_SYCL_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <sycl/sycl.hpp>
++
++#include "absl/status/status.h"
++#include "absl/status/statusor.h"
++#include "xla/xla_data.pb.h"
++
++namespace stream_executor::sycl {
++
++enum class CubScanKind { kInvalid, kSum };
++
++// Performs an inclusive scan of `d_in` into `d_out` on SYCL device memory. The
++// input is treated as `column_length` rows of `row_length` contiguous elements,
++// scanned along each row. oneDPL allocates its own temporaries, so
++// `d_temp_storage` is unused.
++absl::Status CubScanLaunchKernel(xla::PrimitiveType type, void* d_temp_storage,
++                                 size_t temp_bytes, const void* d_in,
++                                 void* d_out, int64_t vector_length,
++                                 int64_t row_length, int64_t column_length,
++                                 CubScanKind kind, bool is_reverse,
++                                 ::sycl::queue* stream);
++
++// Returns the scratch size the scan needs, which is always 0, or an error if
++// the scan is unsupported.
++absl::StatusOr<size_t> CubScanGetScratchSize(xla::PrimitiveType type,
++                                             int64_t vector_length,
++                                             int64_t row_length,
++                                             int64_t column_length,
++                                             CubScanKind kind, bool is_reverse);
++
++}  // namespace stream_executor::sycl
++
++#endif  // XLA_STREAM_EXECUTOR_SYCL_CUB_SCAN_KERNEL_SYCL_H_
+diff --git a/xla/stream_executor/sycl/cub_scan_kernel_sycl_impl.dp.cpp b/xla/stream_executor/sycl/cub_scan_kernel_sycl_impl.dp.cpp
+new file mode 100644
+index 0000000000..3e68b91d75
+--- /dev/null
++++ b/xla/stream_executor/sycl/cub_scan_kernel_sycl_impl.dp.cpp
+@@ -0,0 +1,209 @@
++/* Copyright 2026 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#include <cstddef>
++#include <cstdint>
++#include <exception>
++#include <functional>
++#include <limits>
++#include <sycl/sycl.hpp>
++
++// The execution policy header must precede the algorithm headers.
++#include <oneapi/dpl/execution>
++#include <oneapi/dpl/iterator>
++#include <oneapi/dpl/numeric>
++
++#include "absl/status/status.h"
++#include "absl/status/status_macros.h"
++#include "absl/status/statusor.h"
++#include "absl/strings/str_cat.h"
++#include "xla/status_macros.h"
++#include "xla/stream_executor/sycl/cub_scan_kernel_sycl.h"
++#include "xla/xla_data.pb.h"
++
++namespace stream_executor::sycl {
++namespace {
++
++// SYCL requires unique kernel names, and oneDPL names its kernels after the
++// policy, so every element type and scan variant needs its own policy name.
++template <typename T>
++class CubScanPolicyName;
++template <typename T, typename KeyT>
++class CubSegmentedScanPolicyName;
++
++// Maps an element index to the index of its row.
++template <typename KeyT>
++struct RowIndex {
++  KeyT row_length;
++  KeyT operator()(KeyT i) const { return i / row_length; }
++};
++
++// Scans a single row with a plain scan, which oneDPL runs in a single
++// work-group kernel for small inputs and otherwise as a reduce-then-scan that
++// carries no segment flags.
++template <typename T>
++void ScanRow(const T* d_in, T* d_out, int64_t num_elements,
++             ::sycl::queue& stream) {
++  auto policy =
++      oneapi::dpl::execution::make_device_policy<CubScanPolicyName<T>>(stream);
++  oneapi::dpl::inclusive_scan(policy, d_in, d_in + num_elements, d_out,
++                              std::plus<T>());
++}
++
++// Scans every row with a single segmented scan keyed by row index. One scan per
++// row would serialize `column_length` device launches. KeyT is uint32_t when
++// every element index fits, as 64-bit division is much slower on the device.
++template <typename T, typename KeyT>
++void ScanSegmentedRows(const T* d_in, T* d_out, int64_t row_length,
++                       int64_t num_elements, ::sycl::queue& stream) {
++  auto policy = oneapi::dpl::execution::make_device_policy<
++      CubSegmentedScanPolicyName<T, KeyT>>(stream);
++
++  // Equal adjacent keys delimit one scan segment.
++  auto keys = oneapi::dpl::make_transform_iterator(
++      oneapi::dpl::counting_iterator<KeyT>(0),
++      RowIndex<KeyT>{static_cast<KeyT>(row_length)});
++  oneapi::dpl::inclusive_scan_by_segment(policy, keys, keys + num_elements,
++                                         d_in, d_out, std::equal_to<KeyT>(),
++                                         std::plus<T>());
++}
++
++template <typename T>
++absl::Status ScanRows(const T* d_in, T* d_out, int64_t row_length,
++                      int64_t column_length, ::sycl::queue* stream) {
++  const int64_t num_elements = row_length * column_length;
++  try {
++    if (column_length == 1) {
++      ScanRow(d_in, d_out, num_elements, *stream);
++    } else if (num_elements <= std::numeric_limits<uint32_t>::max()) {
++      ScanSegmentedRows<T, uint32_t>(d_in, d_out, row_length, num_elements,
++                                     *stream);
++    } else {
++      ScanSegmentedRows<T, uint64_t>(d_in, d_out, row_length, num_elements,
++                                     *stream);
++    }
++    // oneDPL's algorithms are blocking, so the scan has already completed. The
++    // wait rethrows anything the queue reported asynchronously, which `wait()`
++    // would instead route to the queue's async handler.
++    stream->wait_and_throw();
++  } catch (const std::exception& e) {
++    return absl::InternalError(
++        absl::StrCat("Failed to run the oneDPL inclusive scan: ", e.what()));
++  } catch (...) {
++    return absl::InternalError(
++        "Failed to run the oneDPL inclusive scan: unknown exception");
++  }
++  return absl::OkStatus();
++}
++
++template <typename T>
++absl::Status CubScanDispatch(size_t* temp_bytes, const T* d_in, T* d_out,
++                             int64_t vector_length, int64_t row_length,
++                             int64_t column_length, CubScanKind kind,
++                             bool is_reverse, ::sycl::queue* stream) {
++  if (kind != CubScanKind::kSum) {
++    return absl::InvalidArgumentError("Only SUM scan kind is supported.");
++  }
++  if (is_reverse) {
++    return absl::InvalidArgumentError("Only forward scan is supported.");
++  }
++  if (vector_length > 1) {
++    return absl::InvalidArgumentError("Only vector_length = 1 is supported.");
++  }
++  TF_RET_CHECK(row_length >= 0 && column_length >= 0)
++      << "row_length (" << row_length << ") and column_length ("
++      << column_length << ") must be non-negative";
++
++  // A null input and output is a request for the scratch size. oneDPL
++  // allocates its own temporaries, so the scan needs none.
++  if (d_in == nullptr && d_out == nullptr) {
++    *temp_bytes = 0;
++    return absl::OkStatus();
++  }
++
++  TF_RET_CHECK(stream != nullptr) << "SYCL queue cannot be null";
++
++  if (row_length == 0 || column_length == 0) {
++    return absl::OkStatus();
++  }
++  return ScanRows<T>(d_in, d_out, row_length, column_length, stream);
++}
++
++absl::Status CubScanDispatch(xla::PrimitiveType type, size_t* temp_bytes,
++                             const void* d_in, void* d_out,
++                             int64_t vector_length, int64_t row_length,
++                             int64_t column_length, CubScanKind kind,
++                             bool is_reverse, ::sycl::queue* stream) {
++  auto impl = [&](auto value) {
++    using T = decltype(value);
++    return CubScanDispatch<T>(temp_bytes, static_cast<const T*>(d_in),
++                              static_cast<T*>(d_out), vector_length, row_length,
++                              column_length, kind, is_reverse, stream);
++  };
++  switch (type) {
++    case xla::PrimitiveType::BF16:
++      return impl(::sycl::ext::oneapi::bfloat16{});
++    case xla::PrimitiveType::F16:
++      return impl(::sycl::half{});
++    case xla::PrimitiveType::F32:
++      return impl(float{});
++    case xla::PrimitiveType::F64:
++      return impl(double{});
++    case xla::PrimitiveType::S8:
++      return impl(int8_t{});
++    case xla::PrimitiveType::S16:
++      return impl(int16_t{});
++    case xla::PrimitiveType::S32:
++      return impl(int32_t{});
++    case xla::PrimitiveType::S64:
++      return impl(int64_t{});
++    case xla::PrimitiveType::U8:
++      return impl(uint8_t{});
++    case xla::PrimitiveType::U16:
++      return impl(uint16_t{});
++    case xla::PrimitiveType::U32:
++      return impl(uint32_t{});
++    case xla::PrimitiveType::U64:
++      return impl(uint64_t{});
++    default:
++      return absl::InvalidArgumentError(
++          absl::StrCat("Unsupported element type for CUB scan: ",
++                       xla::PrimitiveType_Name(type)));
++  }
++}
++
++}  // namespace
++
++absl::Status CubScanLaunchKernel(xla::PrimitiveType type, void* d_temp_storage,
++                                 size_t temp_bytes, const void* d_in,
++                                 void* d_out, int64_t vector_length,
++                                 int64_t row_length, int64_t column_length,
++                                 CubScanKind kind, bool is_reverse,
++                                 ::sycl::queue* stream) {
++  return CubScanDispatch(type, &temp_bytes, d_in, d_out, vector_length,
++                         row_length, column_length, kind, is_reverse, stream);
++}
++
++absl::StatusOr<size_t> CubScanGetScratchSize(
++    xla::PrimitiveType type, int64_t vector_length, int64_t row_length,
++    int64_t column_length, CubScanKind kind, bool is_reverse) {
++  size_t temp_bytes = 0;
++  ABSL_RETURN_IF_ERROR(CubScanDispatch(type, &temp_bytes, nullptr, nullptr,
++                                       vector_length, row_length, column_length,
++                                       kind, is_reverse, nullptr));
++  return temp_bytes;
++}
++
++}  // namespace stream_executor::sycl
+diff --git a/xla/stream_executor/sycl/cub_scan_kernel_sycl_test.cc b/xla/stream_executor/sycl/cub_scan_kernel_sycl_test.cc
+new file mode 100644
+index 0000000000..b608ba652e
+--- /dev/null
++++ b/xla/stream_executor/sycl/cub_scan_kernel_sycl_test.cc
+@@ -0,0 +1,238 @@
++/* Copyright 2026 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#include "xla/stream_executor/sycl/cub_scan_kernel_sycl.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <optional>
++#include <string>
++#include <tuple>
++#include <type_traits>
++#include <vector>
++#include <sycl/sycl.hpp>
++
++#include <gmock/gmock.h>
++#include <gtest/gtest.h>
++#include "absl/cleanup/cleanup.h"
++#include "absl/status/status.h"
++#include "absl/status/status_macros.h"
++#include "absl/status/status_matchers.h"
++#include "absl/strings/str_format.h"
++#include "xla/primitive_util.h"
++#include "xla/stream_executor/device_address.h"
++#include "xla/stream_executor/platform.h"
++#include "xla/stream_executor/platform_manager.h"
++#include "xla/stream_executor/stream.h"
++#include "xla/stream_executor/stream_executor.h"
++#include "xla/xla_data.pb.h"
++
++namespace se = stream_executor;
++
++namespace stream_executor::sycl {
++namespace {
++
++class CubScanKernelSyclTest
++    : public ::testing::Test,
++      public ::testing::WithParamInterface<std::tuple<
++          xla::PrimitiveType, size_t, size_t, size_t, CubScanKind, bool>> {
++ protected:
++  void SetUp() override {
++    ASSERT_OK_AND_ASSIGN(platform_,
++                         se::PlatformManager::PlatformWithName("SYCL"));
++    ASSERT_OK_AND_ASSIGN(executor_, platform_->ExecutorForDevice(0));
++    ASSERT_OK_AND_ASSIGN(stream_, executor_->CreateStream(std::nullopt));
++  }
++
++  ::sycl::queue* queue() {
++    return static_cast<::sycl::queue*>(
++        stream_->platform_specific_handle().stream);
++  }
++
++ public:
++  // ComputeT is the type used for host-side reference accumulation. For 16-bit
++  // floats it is `float`, rounded back to T after every add, so the reference
++  // matches the device accumulating in T.
++  template <typename T, typename ComputeT = T>
++  absl::Status RunCubScanTest(xla::PrimitiveType type, size_t vector_length,
++                              size_t row_length, size_t col_length,
++                              CubScanKind kind, bool is_reverse) {
++    SCOPED_TRACE(absl::StrFormat(
++        "type=%s vector_length=%d row_length=%d col_length=%d",
++        xla::primitive_util::LowercasePrimitiveTypeName(type), vector_length,
++        row_length, col_length));
++
++    constexpr bool kIsHalfPrecision =
++        std::is_same_v<T, ::sycl::half> ||
++        std::is_same_v<T, ::sycl::ext::oneapi::bfloat16>;
++    size_t num_elements = vector_length * row_length * col_length;
++    std::vector<T> host_data(num_elements);
++    std::vector<ComputeT> expected(num_elements);
++    size_t idx = 0;
++    for (size_t i = 0; i < col_length; ++i) {
++      ComputeT sum = ComputeT{};
++      for (size_t j = 0; j < row_length; ++j) {
++        ComputeT value = static_cast<ComputeT>((i + j) % 5);
++        // Round-trip through the storage type to mirror device precision.
++        T stored = static_cast<T>(value);
++        sum += static_cast<ComputeT>(stored);
++        sum = static_cast<ComputeT>(static_cast<T>(sum));
++        host_data[idx] = stored;
++        expected[idx] = sum;
++        ++idx;
++      }
++    }
++
++    // The oneDPL backend allocates its own temporaries, so the scan needs no
++    // caller-provided scratch buffer.
++    ABSL_ASSIGN_OR_RETURN(size_t temp_bytes,
++                          CubScanGetScratchSize(type, vector_length, row_length,
++                                                col_length, kind, is_reverse));
++    EXPECT_EQ(temp_bytes, 0);
++
++    se::DeviceAddress<T> device_data =
++        executor_->AllocateArray<T>(num_elements);
++    auto data_cleanup =
++        absl::MakeCleanup([&]() { executor_->Deallocate(&device_data); });
++
++    size_t size_bytes = num_elements * sizeof(T);
++    ABSL_RETURN_IF_ERROR(
++        stream_->Memcpy(&device_data, host_data.data(), size_bytes));
++
++    ABSL_RETURN_IF_ERROR(CubScanLaunchKernel(
++        type, /*d_temp_storage=*/nullptr, temp_bytes, device_data.opaque(),
++        device_data.opaque(), vector_length, row_length, col_length, kind,
++        is_reverse, queue()));
++
++    ABSL_RETURN_IF_ERROR(stream_->BlockHostUntilDone());
++    ABSL_RETURN_IF_ERROR(
++        stream_->Memcpy(host_data.data(), device_data, size_bytes));
++
++    for (size_t k = 0; k < num_elements; ++k) {
++      if constexpr (kIsHalfPrecision) {
++        EXPECT_FLOAT_EQ(static_cast<float>(host_data[k]),
++                        static_cast<float>(expected[k]));
++      } else if constexpr (std::is_same_v<T, float>) {
++        EXPECT_FLOAT_EQ(host_data[k], expected[k]);
++      } else if constexpr (std::is_same_v<T, double>) {
++        EXPECT_DOUBLE_EQ(host_data[k], expected[k]);
++      } else {
++        EXPECT_EQ(host_data[k], expected[k]);
++      }
++    }
++    return absl::OkStatus();
++  }
++
++ private:
++  se::Platform* platform_;
++  se::StreamExecutor* executor_;
++  std::unique_ptr<se::Stream> stream_;
++};
++
++TEST_P(CubScanKernelSyclTest, TestPrefixSum) {
++  const auto& params = GetParam();
++  auto type = std::get<xla::PrimitiveType>(params);
++  const size_t row_length = std::get<2>(params);
++  if (type == xla::PrimitiveType::BF16 && row_length > 128) {
++    GTEST_SKIP() << "BF16 for row length > 128 has precision issues.";
++  }
++  // Past 2048 the f16 sums are inexact, and the parallel scan rounds in a
++  // different order than the sequential reference.
++  if (type == xla::PrimitiveType::F16 && row_length > 2048) {
++    GTEST_SKIP() << "F16 for row length > 2048 has precision issues.";
++  }
++  switch (type) {
++    case xla::PrimitiveType::BF16:
++      EXPECT_OK(std::apply(
++          &CubScanKernelSyclTest::RunCubScanTest<
++              ::sycl::ext::oneapi::bfloat16, float>,
++          std::tuple_cat(std::make_tuple(this), params)));
++      return;
++    case xla::PrimitiveType::F16:
++      EXPECT_OK(std::apply(
++          &CubScanKernelSyclTest::RunCubScanTest<::sycl::half, float>,
++          std::tuple_cat(std::make_tuple(this), params)));
++      return;
++    default:
++      break;
++  }
++  auto impl = [&](auto value) {
++    EXPECT_OK(std::apply(
++        &CubScanKernelSyclTest::RunCubScanTest<decltype(value)>,
++        std::tuple_cat(std::make_tuple(this), params)));
++  };
++  switch (type) {
++    case xla::PrimitiveType::F32:
++      return impl(float{});
++    case xla::PrimitiveType::F64:
++      return impl(double{});
++    case xla::PrimitiveType::S8:
++      return impl(int8_t{});
++    case xla::PrimitiveType::S16:
++      return impl(int16_t{});
++    case xla::PrimitiveType::S32:
++      return impl(int32_t{});
++    case xla::PrimitiveType::S64:
++      return impl(int64_t{});
++    case xla::PrimitiveType::U8:
++      return impl(uint8_t{});
++    case xla::PrimitiveType::U16:
++      return impl(uint16_t{});
++    case xla::PrimitiveType::U32:
++      return impl(uint32_t{});
++    case xla::PrimitiveType::U64:
++      return impl(uint64_t{});
++    default:
++      FAIL() << "Unsupported element type for CUB scan";
++  }
++}
++
++std::string CubScanKindToString(CubScanKind kind) {
++  switch (kind) {
++    case CubScanKind::kSum:
++      return "Sum";
++    case CubScanKind::kInvalid:
++      return "Invalid";
++  }
++}
++
++std::string ParametersToString(
++    const ::testing::TestParamInfo<::testing::tuple<
++        xla::PrimitiveType, size_t, size_t, size_t, CubScanKind, bool>>& data) {
++  const auto& [type, vector_length, row_length, col_length, kind, is_reverse] =
++      data.param;
++  return absl::StrFormat("%s_%s_%dx%dx%d_%s", CubScanKindToString(kind),
++                         is_reverse ? "reverse" : "forward", col_length,
++                         row_length, vector_length,
++                         xla::primitive_util::LowercasePrimitiveTypeName(type));
++}
++
++INSTANTIATE_TEST_SUITE_P(
++    CubScanKernelSyclTestInstance, CubScanKernelSyclTest,
++    ::testing::Combine(::testing::ValuesIn({xla::BF16, xla::F16, xla::F32,
++                                            xla::F64, xla::S8, xla::S16,
++                                            xla::S32, xla::S64, xla::U8,
++                                            xla::U16, xla::U32, xla::U64}),
++                       ::testing::Values(size_t{1}),
++                       ::testing::ValuesIn<size_t>({1, 2, 3, 128, 511, 513,
++                                                    4099}),
++                       ::testing::ValuesIn<size_t>({1, 2, 3, 128, 511, 512}),
++                       ::testing::Values(CubScanKind::kSum),
++                       ::testing::Values(false)),
++    ParametersToString);
++
++}  // namespace
++}  // namespace stream_executor::sycl
+diff --git a/xla/stream_executor/sycl/fft_sycl_test.cc b/xla/stream_executor/sycl/fft_sycl_test.cc
+new file mode 100644
+index 0000000000..2b4afda0eb
+--- /dev/null
++++ b/xla/stream_executor/sycl/fft_sycl_test.cc
+@@ -0,0 +1,101 @@
++/* Copyright 2026 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#include <gtest/gtest.h>
++#include "absl/strings/string_view.h"
++#include "xla/error_spec.h"
++#include "xla/tests/hlo_pjrt_interpreter_reference_mixin.h"
++#include "xla/tests/hlo_test_base.h"
++
++namespace xla::gpu {
++namespace {
++
++using FftSyclTest = HloInterpreterReferenceMixin<HloTestBase>;
++
++// XLA ignores the imaginary parts of the DC (index 0) and Nyquist (index N/2)
++// elements. oneMKL does not, so this fails without the preprocessing.
++TEST_F(FftSyclTest, IrfftEvenLength) {
++  absl::string_view hlo = R"(
++  HloModule irfft
++
++  ENTRY main {
++    input = c64[11]{0} parameter(0)
++    ROOT fft = f32[20]{0} fft(input), fft_type=IRFFT, fft_length={20}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo, ErrorSpec{1e-4, 1e-4}));
++}
++
++// An odd length has no Nyquist element, so only index 0 is preprocessed.
++TEST_F(FftSyclTest, IrfftOddLength) {
++  absl::string_view hlo = R"(
++  HloModule irfft_odd
++
++  ENTRY main {
++    input = c64[6]{0} parameter(0)
++    ROOT fft = f32[11]{0} fft(input), fft_type=IRFFT, fft_length={11}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo, ErrorSpec{1e-4, 1e-4}));
++}
++
++TEST_F(FftSyclTest, IrfftBatched) {
++  absl::string_view hlo = R"(
++  HloModule irfft_batched
++
++  ENTRY main {
++    input = c64[3,11]{1,0} parameter(0)
++    ROOT fft = f32[3,20]{1,0} fft(input), fft_type=IRFFT, fft_length={20}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo, ErrorSpec{1e-4, 1e-4}));
++}
++
++// For rank > 1, the preprocessing covers the whole DC and Nyquist slice of the
++// last axis.
++TEST_F(FftSyclTest, Irfft2DEvenLastLength) {
++  absl::string_view hlo = R"(
++  HloModule irfft2d
++
++  ENTRY main {
++    input = c64[4,5]{1,0} parameter(0)
++    ROOT fft = f32[4,8]{1,0} fft(input), fft_type=IRFFT, fft_length={4,8}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo, ErrorSpec{1e-4, 1e-4}));
++}
++
++TEST_F(FftSyclTest, Irfft2DOddLastLength) {
++  absl::string_view hlo = R"(
++  HloModule irfft2d_odd
++
++  ENTRY main {
++    input = c64[4,4]{1,0} parameter(0)
++    ROOT fft = f32[4,7]{1,0} fft(input), fft_type=IRFFT, fft_length={4,7}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo, ErrorSpec{1e-4, 1e-4}));
++}
++
++TEST_F(FftSyclTest, Irfft3DBatched) {
++  absl::string_view hlo = R"(
++  HloModule irfft3d
++
++  ENTRY main {
++    input = c64[2,3,4,5]{3,2,1,0} parameter(0)
++    ROOT fft = f32[2,3,4,8]{3,2,1,0} fft(input), fft_type=IRFFT, fft_length={3,4,8}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo, ErrorSpec{1e-4, 1e-4}));
++}
++
++// No double precision tests: the HLO evaluator only supports c64 and f32.
++
++}  // namespace
++}  // namespace xla::gpu
+diff --git a/xla/stream_executor/sycl/gemm_sycl_test.cc b/xla/stream_executor/sycl/gemm_sycl_test.cc
+index 01e9fe98ec..ccf3f62f75 100644
+--- a/xla/stream_executor/sycl/gemm_sycl_test.cc
++++ b/xla/stream_executor/sycl/gemm_sycl_test.cc
+@@ -13,11 +13,10 @@ See the License for the specific language governing permissions and
+ limitations under the License.
+ ==============================================================================*/
+ 
+-#include <gtest/gtest.h>
+-
+ #include <tuple>
+ #include <vector>
+ 
++#include <gtest/gtest.h>
+ #include "absl/container/flat_hash_map.h"
+ #include "absl/log/log.h"
+ #include "absl/status/status.h"
+diff --git a/xla/stream_executor/sycl/onemkl_blas.h b/xla/stream_executor/sycl/onemkl_blas.h
+index f65f35d4d7..0177a448a8 100644
+--- a/xla/stream_executor/sycl/onemkl_blas.h
++++ b/xla/stream_executor/sycl/onemkl_blas.h
+@@ -25,6 +25,21 @@ limitations under the License.
+ 
+ namespace stream_executor::sycl {
+ 
++inline oneapi::mkl::uplo MklUpperLower(blas::UpperLower uplo) {
++  return (uplo == blas::UpperLower::kUpper) ? oneapi::mkl::uplo::upper
++                                            : oneapi::mkl::uplo::lower;
++}
++
++inline oneapi::mkl::diag MklDiagonal(blas::Diagonal diag) {
++  return (diag == blas::Diagonal::kUnit) ? oneapi::mkl::diag::unit
++                                         : oneapi::mkl::diag::nonunit;
++}
++
++inline oneapi::mkl::side MklSide(blas::Side side) {
++  return (side == blas::Side::kLeft) ? oneapi::mkl::side::left
++                                     : oneapi::mkl::side::right;
++}
++
+ // Helper functions transforming blas arguments into oneMKL arguments.
+ inline oneapi::mkl::transpose ToMklTranspose(blas::Transpose trans) {
+   if (trans == blas::Transpose::kTranspose)
+@@ -101,5 +116,88 @@ absl::Status ComplexMatmulImpl(const gpu::GemmConfig& config, Stream* stream,
+                           });
+   return status.status();
+ }
++
++template <typename T>
++bool TrsmImpl(Stream* stream, blas::Side side, blas::UpperLower uplo,
++              blas::Transpose transa, blas::Diagonal diag, int64_t m, int64_t n,
++              T alpha, const T* a, int64_t lda, T* b, int64_t ldb) {
++  ::sycl::queue* q =
++      absl::bit_cast<::sycl::queue*>(stream->platform_specific_handle().stream);
++  absl::StatusOr<::sycl::event> status =
++      ExecMklFunc([&]{ return oneapi::mkl::blas::trsm(*q, MklSide(side),
++                  MklUpperLower(uplo), ToMklTranspose(transa), MklDiagonal(diag),
++                  m, n, alpha, a, lda, b, ldb);});
++  if (status.ok()) {
++    return true;
++  }
++  LOG(ERROR) << status.status();
++  return false;
++}
++
++template <class T>
++bool TrsmBatchImpl(Stream* stream, blas::Side side, blas::UpperLower uplo,
++                   blas::Transpose transa, blas::Diagonal diag, int64_t m,
++                   int64_t n, T alpha, const T** a, int64_t lda, T** b,
++                   int64_t ldb, int64_t batch_count) {
++  struct MklTrsmArgs {
++    MklTrsmArgs(oneapi::mkl::side side_info, oneapi::mkl::uplo uplo_info,
++                oneapi::mkl::transpose transpose_info,
++                oneapi::mkl::diag diag_info, int64_t m, int64_t n,
++                std::int64_t lda, std::int64_t ldb, std::int64_t groupsize_info)
++        : side_info(side_info),
++          uplo_info(uplo_info),
++          transpose_info(transpose_info),
++          diag_info(diag_info),
++          m(m),
++          n(n),
++          lda(lda),
++          ldb(ldb),
++          groupsize_info(groupsize_info) {}
++    oneapi::mkl::side side_info;
++    oneapi::mkl::uplo uplo_info;
++    oneapi::mkl::transpose transpose_info;
++    oneapi::mkl::diag diag_info;
++    std::int64_t m;
++    std::int64_t n;
++    std::int64_t lda;
++    std::int64_t ldb;
++    std::int64_t groupsize_info;
++  };
++
++  ::sycl::queue* q =
++      absl::bit_cast<::sycl::queue*>(stream->platform_specific_handle().stream);
++  // SYCL doesn't allow unique ptrs in some lambda captures, using raw pointers
++  // to pass args to Trsm. onemkl function execute asyncronously, we need to
++  // submit a  SYCL task to delete the pointers.
++  auto alpha_ptr = new T(alpha);
++  auto mkl_trsm_args_ptr =
++      new MklTrsmArgs(MklSide(side), MklUpperLower(uplo), ToMklTranspose(transa),
++                      MklDiagonal(diag), m, n, lda, ldb, batch_count);
++  absl::StatusOr<::sycl::event> status_or_event = ExecMklFunc(
++      [&] { return oneapi::mkl::blas::trsm_batch(*q,
++      &(mkl_trsm_args_ptr->side_info), &(mkl_trsm_args_ptr->uplo_info),
++      &(mkl_trsm_args_ptr->transpose_info), &(mkl_trsm_args_ptr->diag_info),
++      &(mkl_trsm_args_ptr->m), &(mkl_trsm_args_ptr->n), alpha_ptr, a,
++      &(mkl_trsm_args_ptr->lda), b, &(mkl_trsm_args_ptr->ldb), 1,
++      &(mkl_trsm_args_ptr->groupsize_info));});
++  if (!status_or_event.ok()) {
++    // Mkl call failed, clean up and exit.
++    LOG(ERROR) << status_or_event.status();
++    delete mkl_trsm_args_ptr;
++    delete alpha_ptr;
++    return false;
++  }
++  // submit task to delete args_ptr after mkl call is completed.
++  ::sycl::event e = *status_or_event;
++  q->submit([&](::sycl::handler& cgh) {
++    cgh.depends_on(e);
++    cgh.host_task([mkl_trsm_args_ptr, alpha_ptr] {
++      delete mkl_trsm_args_ptr;
++      delete alpha_ptr;
++    });
++  });
++  return true;
++}
++
+ }  // namespace stream_executor::sycl
+ #endif  // XLA_STREAM_EXECUTOR_SYCL_ONEMKL_BLAS_H_
+diff --git a/xla/stream_executor/sycl/sycl_blas_lt.cc b/xla/stream_executor/sycl/sycl_blas_lt.cc
+index aacaf3cea6..c5636c4036 100644
+--- a/xla/stream_executor/sycl/sycl_blas_lt.cc
++++ b/xla/stream_executor/sycl/sycl_blas_lt.cc
+@@ -18,12 +18,12 @@ limitations under the License.
+ #include <complex>
+ #include <cstdint>
+ #include <limits>
+-#include <sycl/sycl.hpp>  // NOLINT
+ 
+ #include "absl/log/log.h"
+ #include "absl/status/status_macros.h"
+ #include "absl/status/statusor.h"
+ #include "oneapi/mkl.hpp"
++#include <sycl/sycl.hpp>  // NOLINT
+ #include "xla/service/gpu/matmul_utils.h"
+ #include "xla/stream_executor/device_address.h"
+ #include "xla/stream_executor/gpu/gpu_helpers.h"
+@@ -196,6 +196,92 @@ bool SyclBlasSupport::DoBlasScal(Stream* stream, uint64_t elem_count,
+ 
+ bool SyclBlasSupport::Init() { return true; }
+ 
++bool SyclBlasSupport::DoBlasTrsm(Stream* stream, blas::Side side,
++                                 blas::UpperLower uplo, blas::Transpose transa,
++                                 blas::Diagonal diag, uint64_t m, uint64_t n,
++                                 float alpha, const DeviceAddress<float>& a,
++                                 int lda, DeviceAddress<float>* b, int ldb) {
++  return TrsmImpl(stream, side, uplo, transa, diag, m, n, alpha,
++                  static_cast<const float*>(a.opaque()), lda,
++                  static_cast<float*>(b->opaque()), ldb);
++}
++
++bool SyclBlasSupport::DoBlasTrsm(Stream* stream, blas::Side side,
++                                 blas::UpperLower uplo, blas::Transpose transa,
++                                 blas::Diagonal diag, uint64_t m, uint64_t n,
++                                 double alpha, const DeviceAddress<double>& a,
++                                 int lda, DeviceAddress<double>* b, int ldb) {
++  return TrsmImpl(stream, side, uplo, transa, diag, m, n, alpha,
++                  static_cast<const double*>(a.opaque()), lda,
++                  static_cast<double*>(b->opaque()), ldb);
++}
++
++bool SyclBlasSupport::DoBlasTrsm(Stream* stream, blas::Side side,
++                                 blas::UpperLower uplo, blas::Transpose transa,
++                                 blas::Diagonal diag, uint64_t m, uint64_t n,
++                                 std::complex<float> alpha,
++                                 const DeviceAddress<std::complex<float>>& a,
++                                 int lda, DeviceAddress<std::complex<float>>* b,
++                                 int ldb) {
++  return TrsmImpl(stream, side, uplo, transa, diag, m, n, alpha,
++                  static_cast<const std::complex<float>*>(a.opaque()), lda,
++                  static_cast<std::complex<float>*>(b->opaque()), ldb);
++}
++
++bool SyclBlasSupport::DoBlasTrsm(
++    Stream* stream, blas::Side side, blas::UpperLower uplo,
++    blas::Transpose transa, blas::Diagonal diag, uint64_t m, uint64_t n,
++    std::complex<double> alpha, const DeviceAddress<std::complex<double>>& a,
++    int lda, DeviceAddress<std::complex<double>>* b, int ldb) {
++  return TrsmImpl(stream, side, uplo, transa, diag, m, n, alpha,
++                  static_cast<const std::complex<double>*>(a.opaque()), lda,
++                  static_cast<std::complex<double>*>(b->opaque()), ldb);
++}
++
++bool SyclBlasSupport::DoBlasTrsmBatched(
++    Stream* stream, blas::Side side, blas::UpperLower uplo,
++    blas::Transpose transa, blas::Diagonal diag, uint64_t m, uint64_t n,
++    float alpha, const DeviceAddress<float*>& as, int lda,
++    DeviceAddress<float*>* bs, int ldb, int batch_count) {
++  return TrsmBatchImpl(stream, side, uplo, transa, diag, m, n, alpha,
++                       static_cast<const float**>(as.opaque()), lda,
++                       static_cast<float**>(bs->opaque()), ldb, batch_count);
++}
++
++bool SyclBlasSupport::DoBlasTrsmBatched(
++    Stream* stream, blas::Side side, blas::UpperLower uplo,
++    blas::Transpose transa, blas::Diagonal diag, uint64_t m, uint64_t n,
++    double alpha, const DeviceAddress<double*>& as, int lda,
++    DeviceAddress<double*>* bs, int ldb, int batch_count) {
++  return TrsmBatchImpl(stream, side, uplo, transa, diag, m, n, alpha,
++                       static_cast<const double**>(as.opaque()), lda,
++                       static_cast<double**>(bs->opaque()), ldb, batch_count);
++}
++
++bool SyclBlasSupport::DoBlasTrsmBatched(
++    Stream* stream, blas::Side side, blas::UpperLower uplo,
++    blas::Transpose transa, blas::Diagonal diag, uint64_t m, uint64_t n,
++    std::complex<float> alpha, const DeviceAddress<std::complex<float>*>& as,
++    int lda, DeviceAddress<std::complex<float>*>* bs, int ldb,
++    int batch_count) {
++  return TrsmBatchImpl(stream, side, uplo, transa, diag, m, n, alpha,
++                       static_cast<const std::complex<float>**>(as.opaque()),
++                       lda, static_cast<std::complex<float>**>(bs->opaque()),
++                       ldb, batch_count);
++}
++
++bool SyclBlasSupport::DoBlasTrsmBatched(
++    Stream* stream, blas::Side side, blas::UpperLower uplo,
++    blas::Transpose transa, blas::Diagonal diag, uint64_t m, uint64_t n,
++    std::complex<double> alpha, const DeviceAddress<std::complex<double>*>& as,
++    int lda, DeviceAddress<std::complex<double>*>* bs, int ldb,
++    int batch_count) {
++  return TrsmBatchImpl(stream, side, uplo, transa, diag, m, n, alpha,
++                       static_cast<const std::complex<double>**>(as.opaque()),
++                       lda, static_cast<std::complex<double>**>(bs->opaque()),
++                       ldb, batch_count);
++}
++
+ static void RegisterSyclBlasSupport() {
+   absl::Status status =
+       PluginRegistry::Instance()->RegisterFactory<PluginRegistry::BlasFactory>(
+diff --git a/xla/stream_executor/sycl/sycl_blas_lt.h b/xla/stream_executor/sycl/sycl_blas_lt.h
+index 4a056aaaa1..98dc5d4052 100644
+--- a/xla/stream_executor/sycl/sycl_blas_lt.h
++++ b/xla/stream_executor/sycl/sycl_blas_lt.h
+@@ -20,6 +20,7 @@ limitations under the License.
+ #include "xla/stream_executor/blas.h"
+ #include "xla/stream_executor/gpu/gpu_blas_lt.h"
+ #include "xla/stream_executor/stream_executor.h"
++#include "xla/stream_executor/sycl/onemkl_util.h"
+ 
+ namespace stream_executor {
+ namespace sycl {
+@@ -311,76 +312,52 @@ class SyclBlasSupport : public blas::BlasSupport {
+   bool DoBlasTrsm(Stream* stream, blas::Side side, blas::UpperLower uplo,
+                   blas::Transpose transa, blas::Diagonal diag, uint64_t m,
+                   uint64_t n, float alpha, const DeviceAddress<float>& a,
+-                  int lda, DeviceAddress<float>* b, int ldb) override {
+-    LOG(ERROR) << "DoBlasTrsm is not implemented";
+-    return false;
+-  }
++                  int lda, DeviceAddress<float>* b, int ldb) override;
+ 
+   bool DoBlasTrsm(Stream* stream, blas::Side side, blas::UpperLower uplo,
+                   blas::Transpose transa, blas::Diagonal diag, uint64_t m,
+                   uint64_t n, double alpha, const DeviceAddress<double>& a,
+-                  int lda, DeviceAddress<double>* b, int ldb) override {
+-    LOG(ERROR) << "DoBlasTrsm is not implemented";
+-    return false;
+-  }
++                  int lda, DeviceAddress<double>* b, int ldb) override;
+ 
+   bool DoBlasTrsm(Stream* stream, blas::Side side, blas::UpperLower uplo,
+                   blas::Transpose transa, blas::Diagonal diag, uint64_t m,
+                   uint64_t n, std::complex<float> alpha,
+                   const DeviceAddress<std::complex<float>>& a, int lda,
+-                  DeviceAddress<std::complex<float>>* b, int ldb) override {
+-    LOG(ERROR) << "DoBlasTrsm is not implemented";
+-    return false;
+-  }
++                  DeviceAddress<std::complex<float>>* b, int ldb) override;
+ 
+   bool DoBlasTrsm(Stream* stream, blas::Side side, blas::UpperLower uplo,
+                   blas::Transpose transa, blas::Diagonal diag, uint64_t m,
+                   uint64_t n, std::complex<double> alpha,
+                   const DeviceAddress<std::complex<double>>& a, int lda,
+-                  DeviceAddress<std::complex<double>>* b, int ldb) override {
+-    LOG(ERROR) << "DoBlasTrsm is not implemented";
+-    return false;
+-  }
++                  DeviceAddress<std::complex<double>>* b, int ldb) override;
+ 
+   bool DoBlasTrsmBatched(Stream* stream, blas::Side side, blas::UpperLower uplo,
+                          blas::Transpose transa, blas::Diagonal diag,
+                          uint64_t m, uint64_t n, float alpha,
+                          const DeviceAddress<float*>& as, int lda,
+                          DeviceAddress<float*>* bs, int ldb,
+-                         int batch_count) override {
+-    LOG(ERROR) << "DoBlasTrsmBatched is not implemented";
+-    return false;
+-  }
++                         int batch_count) override;
+ 
+   bool DoBlasTrsmBatched(Stream* stream, blas::Side side, blas::UpperLower uplo,
+                          blas::Transpose transa, blas::Diagonal diag,
+                          uint64_t m, uint64_t n, double alpha,
+                          const DeviceAddress<double*>& as, int lda,
+                          DeviceAddress<double*>* bs, int ldb,
+-                         int batch_count) override {
+-    LOG(ERROR) << "DoBlasTrsmBatched is not implemented";
+-    return false;
+-  }
++                         int batch_count) override;
+ 
+   bool DoBlasTrsmBatched(Stream* stream, blas::Side side, blas::UpperLower uplo,
+                          blas::Transpose transa, blas::Diagonal diag,
+                          uint64_t m, uint64_t n, std::complex<float> alpha,
+                          const DeviceAddress<std::complex<float>*>& as, int lda,
+                          DeviceAddress<std::complex<float>*>* bs, int ldb,
+-                         int batch_count) override {
+-    LOG(ERROR) << "DoBlasTrsmBatched is not implemented";
+-    return false;
+-  }
++                         int batch_count) override;
+ 
+   bool DoBlasTrsmBatched(Stream* stream, blas::Side side, blas::UpperLower uplo,
+                          blas::Transpose transa, blas::Diagonal diag,
+                          uint64_t m, uint64_t n, std::complex<double> alpha,
+                          const DeviceAddress<std::complex<double>*>& as,
+                          int lda, DeviceAddress<std::complex<double>*>* bs,
+-                         int ldb, int batch_count) override {
+-    LOG(ERROR) << "DoBlasTrsmBatched is not implemented";
+-    return false;
+-  }
++                         int ldb, int batch_count) override;
+ 
+   absl::Status GetVersion(std::string* version) override {
+     return absl::OkStatus();
+diff --git a/xla/stream_executor/sycl/sycl_conv_utils.cc b/xla/stream_executor/sycl/sycl_conv_utils.cc
+index edb66e3ffc..96bf1638a3 100644
+--- a/xla/stream_executor/sycl/sycl_conv_utils.cc
++++ b/xla/stream_executor/sycl/sycl_conv_utils.cc
+@@ -17,6 +17,7 @@ limitations under the License.
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstddef>
+ #include <cstdint>
+ #include <optional>
+ #include <utility>
+@@ -25,6 +26,7 @@ limitations under the License.
+ #include "absl/base/casts.h"
+ #include "absl/status/statusor.h"
+ #include "absl/strings/str_cat.h"
++#include "xla/service/gpu/gpu_constants.h"
+ #include "xla/shape.h"
+ #include "xla/tsl/protobuf/dnn.pb.h"
+ #include "xla/tsl/util/env_var.h"
+@@ -118,11 +120,50 @@ dnnl::memory::dims ToOneDnnFilterDims(const FilterDescriptor& descriptor,
+   return dnnl::memory::dims(dims.begin(), dims.end());
+ }
+ 
+-// Allocates a temporary buffer and wraps it in a dnnl::memory.
+-// Such buffers are used for oneDNN scratchpad and pre-packed filter.
+-absl::StatusOr<dnnl::memory> AllocateDnnlBuffer(const dnnl::memory::desc& desc,
+-                                                const dnnl::engine& engine) {
+-  return CreateDnnlMemory(desc, engine);
++// The filter layout the primitive reads (forward and backward-data) or
++// writes (backward-filter).
++dnnl::memory::desc WeightsTargetDesc(const ConvFwdPd& pd) {
++  return pd.weights_desc();
++}
++dnnl::memory::desc WeightsTargetDesc(const ConvBwdInputPd& pd) {
++  return pd.weights_desc();
++}
++dnnl::memory::desc WeightsTargetDesc(const ConvBwdFilterPd& pd) {
++  return pd.diff_weights_desc();
++}
++
++OneDnnConvWorkspaceLayout ComputeWorkspaceLayout(
++    const OneDnnConvPrimitiveDesc& pd) {
++  OneDnnConvWorkspaceLayout layout;
++  std::visit(
++      [&](const auto& conv_pd) {
++        const dnnl::memory::desc weights_target_desc =
++            WeightsTargetDesc(conv_pd);
++        if (pd.filter_md != weights_target_desc) {
++          layout.internal_filter_size = weights_target_desc.get_size();
++        }
++        layout.scratchpad_size = conv_pd.scratchpad_desc().get_size();
++      },
++      pd.conv_pd);
++  layout.scratchpad_offset =
++      layout.scratchpad_size == 0
++          ? layout.internal_filter_size
++          : xla::RoundUpTo(
++                layout.internal_filter_size,
++                static_cast<size_t>(xla::gpu::kXlaAllocatedBufferAlignBytes));
++  layout.total_size = layout.scratchpad_offset + layout.scratchpad_size;
++  return layout;
++}
++
++absl::StatusOr<dnnl::engine> GetDefaultGpuEngine() {
++  try {
++    static const dnnl::engine* engine =
++        new dnnl::engine(dnnl::engine::kind::gpu, 0);
++    return *engine;
++  } catch (const dnnl::error& e) {
++    return absl::InternalError(
++        absl::StrCat("Failed to create oneDNN GPU engine: ", e.message));
++  }
+ }
+ 
+ // Builds a forward convolution primitive descriptor. `bias_md` is present only
+@@ -151,25 +192,28 @@ ConvFwdPd CreateConvFwdPd(
+ 
+ // Constructs a convolution operation with distinct oneDNN primitive kind
+ // selected by the template arguments (forward, backward-data, or
+-// backward-filter). Wires up the src, filter, and destination memory,
+-// allocates the scratchpad, and pre-packs the filter when the primitive's
+-// preferred layout does not match the one the caller provides.
++// backward-filter). Wires up the src, filter, and destination memory, and
++// places the scratchpad and pre-packed filter inside the workspace.
+ template <typename Pd, typename Primitive, typename ConvOp>
+-absl::StatusOr<ConvOp> BuildConvOp(
+-    const Pd& pd, dnnl::memory src, int src_arg_key, dnnl::memory filter,
+-    int weights_arg_key, dnnl::memory dst, int dst_arg_key,
+-    const dnnl::memory::desc& filter_md,
+-    const dnnl::memory::desc& weights_target_desc, bool prepack_filter,
+-    const dnnl::engine& engine, std::optional<ReorderOp>* out_filter_reorder) {
++ConvOp BuildConvOp(const Pd& pd, dnnl::memory src, int src_arg_key,
++                   dnnl::memory filter, int weights_arg_key, dnnl::memory dst,
++                   int dst_arg_key, const dnnl::memory::desc& filter_md,
++                   bool prepack_filter, const dnnl::engine& engine,
++                   const OneDnnConvWorkspaceLayout& layout, char* workspace,
++                   std::optional<ReorderOp>* out_filter_reorder) {
+   ConvOp op;
+   op.src = std::move(src);
+   op.filter = std::move(filter);
+   op.dst = std::move(dst);
+-  ABSL_ASSIGN_OR_RETURN(op.scratchpad,
+-                        AllocateDnnlBuffer(pd.scratchpad_desc(), engine));
++  if (layout.scratchpad_size > 0) {
++    op.scratchpad = CreateDnnlMemory(pd.scratchpad_desc(), engine,
++                                     workspace + layout.scratchpad_offset);
++    op.args.insert({DNNL_ARG_SCRATCHPAD, op.scratchpad});
++  }
++  const dnnl::memory::desc weights_target_desc = WeightsTargetDesc(pd);
+   if (filter_md != weights_target_desc) {
+-    ABSL_ASSIGN_OR_RETURN(op.internal_filter,
+-                          AllocateDnnlBuffer(weights_target_desc, engine));
++    op.internal_filter =
++        CreateDnnlMemory(weights_target_desc, engine, workspace);
+     *out_filter_reorder = prepack_filter
+                               ? CreateReorderOp(op.filter, op.internal_filter)
+                               : CreateReorderOp(op.internal_filter, op.filter);
+@@ -179,17 +223,14 @@ absl::StatusOr<ConvOp> BuildConvOp(
+   }
+   op.args.insert({src_arg_key, op.src});
+   op.args.insert({dst_arg_key, op.dst});
+-  op.args.insert({DNNL_ARG_SCRATCHPAD, op.scratchpad});
+   op.primitive = Primitive(pd);
+   return op;
+ }
+ }  // namespace
+ 
+ absl::StatusOr<OneDnnConvPrimitiveDesc> CreateOneDnnConvPrimitiveDesc(
+-    const OneDnnConvConfig& config, Stream* stream) {
++    const OneDnnConvConfig& config, const dnnl::engine& engine) {
+   OneDnnConvPrimitiveDesc pd;
+-  ::sycl::queue* sycl_queue =
+-      absl::bit_cast<::sycl::queue*>(stream->platform_specific_handle().stream);
+ 
+   const DataLayout input_dl = config.input_descriptor.layout();
+   const FilterLayout filter_dl = config.filter_descriptor.layout();
+@@ -256,7 +297,7 @@ absl::StatusOr<OneDnnConvPrimitiveDesc> CreateOneDnnConvPrimitiveDesc(
+                         ToOneDnnDataType(input_type));
+   pd.kind = conv_kind;
+   try {
+-    pd.engine = FindOrCreateEngine(sycl_queue);
++    pd.engine = engine;
+     pd.src_md = dnnl::memory::desc({src_dims}, data_type, src_fmt);
+     pd.dst_md = dnnl::memory::desc({dst_dims}, data_type, dst_fmt);
+     pd.filter_md = dnnl::memory::desc({filter_dims}, data_type, weight_fmt);
+@@ -392,15 +433,44 @@ absl::StatusOr<OneDnnConvPrimitiveDesc> CreateOneDnnConvPrimitiveDesc(
+       default:
+         return absl::InvalidArgumentError("Unknown convolution kind");
+     }
++    pd.workspace = ComputeWorkspaceLayout(pd);
+   } catch (const dnnl::error& e) {
+     return absl::InternalError(absl::StrCat("OneDNN Conv error: ", e.message));
+   }
+   return pd;
+ }
+ 
++absl::StatusOr<OneDnnConvPrimitiveDesc> CreateOneDnnConvPrimitiveDesc(
++    const OneDnnConvConfig& config, Stream* stream) {
++  ::sycl::queue* sycl_queue =
++      absl::bit_cast<::sycl::queue*>(stream->platform_specific_handle().stream);
++  dnnl::engine engine;
++  try {
++    engine = FindOrCreateEngine(sycl_queue);
++  } catch (const dnnl::error& e) {
++    return absl::InternalError(absl::StrCat("OneDNN Conv error: ", e.message));
++  }
++  return CreateOneDnnConvPrimitiveDesc(config, engine);
++}
++
++absl::StatusOr<size_t> ComputeOneDnnConvWorkspaceSize(
++    const OneDnnConvConfig& config) {
++  ABSL_ASSIGN_OR_RETURN(dnnl::engine engine, GetDefaultGpuEngine());
++  ABSL_ASSIGN_OR_RETURN(OneDnnConvPrimitiveDesc pd,
++                        CreateOneDnnConvPrimitiveDesc(config, engine));
++  return pd.workspace.total_size;
++}
++
+ absl::StatusOr<OneDnnConvPrimitive> CreateOneDnnConvPrimitive(
+     const OneDnnConvPrimitiveDesc& pd, Stream* stream,
+-    const OnednnConvBufferPointers& buffer_pointers) {
++    const OnednnConvBufferPointers& buffer_pointers,
++    DeviceAddressBase workspace) {
++  if (workspace.size() < pd.workspace.total_size) {
++    return absl::InvalidArgumentError(absl::StrCat(
++        "oneDNN convolution needs a workspace of ", pd.workspace.total_size,
++        " bytes but got ", workspace.size(), " bytes"));
++  }
++  char* workspace_base = static_cast<char*>(workspace.opaque());
+   OneDnnConvPrimitive onednn_conv_primitive;
+   ::sycl::queue* sycl_queue =
+       absl::bit_cast<::sycl::queue*>(stream->platform_specific_handle().stream);
+@@ -450,15 +520,14 @@ absl::StatusOr<OneDnnConvPrimitive> CreateOneDnnConvPrimitive(
+       case dnn::ConvolutionKind::FORWARD:
+       case dnn::ConvolutionKind::FORWARD_BIAS_ACTIVATION: {
+         const ConvFwdPd& fwd_pd = std::get<ConvFwdPd>(pd.conv_pd);
+-        ConvFwd fwd;
+-        ABSL_ASSIGN_OR_RETURN(
+-            fwd, (BuildConvOp<ConvFwdPd, dnnl::convolution_forward, ConvFwd>(
+-                     fwd_pd, std::move(src_memory), DNNL_ARG_SRC,
+-                     std::move(filter_memory), DNNL_ARG_WEIGHTS,
+-                     std::move(dst_memory), DNNL_ARG_DST, pd.filter_md,
+-                     fwd_pd.weights_desc(),
+-                     /*prepack_filter=*/true, onednn_conv_primitive.engine,
+-                     &onednn_conv_primitive.filter_reorder)));
++        ConvFwd fwd =
++            BuildConvOp<ConvFwdPd, dnnl::convolution_forward, ConvFwd>(
++                fwd_pd, std::move(src_memory), DNNL_ARG_SRC,
++                std::move(filter_memory), DNNL_ARG_WEIGHTS,
++                std::move(dst_memory), DNNL_ARG_DST, pd.filter_md,
++                /*prepack_filter=*/true, onednn_conv_primitive.engine,
++                pd.workspace, workspace_base,
++                &onednn_conv_primitive.filter_reorder);
+ 
+         fwd.side_input = std::move(side_input_memory);
+         if (pd.bias.has_value() && bias_data != nullptr) {
+@@ -472,33 +541,30 @@ absl::StatusOr<OneDnnConvPrimitive> CreateOneDnnConvPrimitive(
+       case dnn::ConvolutionKind::BACKWARD_DATA: {
+         const ConvBwdInputPd& bwd_input_pd =
+             std::get<ConvBwdInputPd>(pd.conv_pd);
+-        ConvBwdData bwd;
+-        ABSL_ASSIGN_OR_RETURN(
+-            bwd, (BuildConvOp<ConvBwdInputPd, dnnl::convolution_backward_data,
+-                              ConvBwdData>(
+-                     bwd_input_pd, std::move(src_memory), DNNL_ARG_DIFF_SRC,
+-                     std::move(filter_memory), DNNL_ARG_WEIGHTS,
+-                     std::move(dst_memory), DNNL_ARG_DIFF_DST, pd.filter_md,
+-                     bwd_input_pd.weights_desc(),
+-                     /*prepack_filter=*/true, onednn_conv_primitive.engine,
+-                     &onednn_conv_primitive.filter_reorder)));
++        ConvBwdData bwd =
++            BuildConvOp<ConvBwdInputPd, dnnl::convolution_backward_data,
++                        ConvBwdData>(
++                bwd_input_pd, std::move(src_memory), DNNL_ARG_DIFF_SRC,
++                std::move(filter_memory), DNNL_ARG_WEIGHTS,
++                std::move(dst_memory), DNNL_ARG_DIFF_DST, pd.filter_md,
++                /*prepack_filter=*/true, onednn_conv_primitive.engine,
++                pd.workspace, workspace_base,
++                &onednn_conv_primitive.filter_reorder);
+         onednn_conv_primitive.op = std::move(bwd);
+         break;
+       }
+       case dnn::ConvolutionKind::BACKWARD_FILTER: {
+         const ConvBwdFilterPd& bwd_filter_pd =
+             std::get<ConvBwdFilterPd>(pd.conv_pd);
+-        ConvBwdWeights bwd;
+-        ABSL_ASSIGN_OR_RETURN(
+-            bwd,
+-            (BuildConvOp<ConvBwdFilterPd, dnnl::convolution_backward_weights,
+-                         ConvBwdWeights>(
++        ConvBwdWeights bwd =
++            BuildConvOp<ConvBwdFilterPd, dnnl::convolution_backward_weights,
++                        ConvBwdWeights>(
+                 bwd_filter_pd, std::move(src_memory), DNNL_ARG_SRC,
+                 std::move(filter_memory), DNNL_ARG_DIFF_WEIGHTS,
+                 std::move(dst_memory), DNNL_ARG_DIFF_DST, pd.filter_md,
+-                bwd_filter_pd.diff_weights_desc(),
+                 /*prepack_filter=*/false, onednn_conv_primitive.engine,
+-                &onednn_conv_primitive.filter_reorder)));
++                pd.workspace, workspace_base,
++                &onednn_conv_primitive.filter_reorder);
+         onednn_conv_primitive.op = std::move(bwd);
+         break;
+       }
+diff --git a/xla/stream_executor/sycl/sycl_conv_utils.h b/xla/stream_executor/sycl/sycl_conv_utils.h
+index a4c1bdb129..0284506c95 100644
+--- a/xla/stream_executor/sycl/sycl_conv_utils.h
++++ b/xla/stream_executor/sycl/sycl_conv_utils.h
+@@ -16,6 +16,7 @@ limitations under the License.
+ #ifndef XLA_STREAM_EXECUTOR_SYCL_SYCL_CONV_UTILS_H_
+ #define XLA_STREAM_EXECUTOR_SYCL_SYCL_CONV_UTILS_H_
+ 
++#include <cstddef>
+ #include <optional>
+ #include <unordered_map>
+ #include <variant>
+@@ -79,6 +80,24 @@ struct OneDnnConvPrimitive {
+   std::optional<ReorderOp> side_input_reorder;
+ };
+ 
++// Byte layout of the workspace buffer that XLA allocates for a convolution.
++// The pre-packed filter is present only when the primitive prefers a filter
++// layout other than XLA's. The pad rounds the scratchpad offset up to XLA's
++// buffer alignment. A region with zero size is absent.
++//
++//   0                                  scratchpad_offset         total_size
++//   v                                  v                         v
++//   +----------------------------+-----+-------------------------+
++//   |     pre-packed filter      | pad |    oneDNN scratchpad    |
++//   +----------------------------+-----+-------------------------+
++//   |<-- internal_filter_size -->|     |<--- scratchpad_size --->|
++struct OneDnnConvWorkspaceLayout {
++  size_t internal_filter_size = 0;
++  size_t scratchpad_offset = 0;
++  size_t scratchpad_size = 0;
++  size_t total_size = 0;
++};
++
+ // Everything the oneDNN convolution execution path needs that is derivable
+ // from an OneDnnConvConfig alone (no device buffers).
+ struct OneDnnConvPrimitiveDesc {
+@@ -104,6 +123,7 @@ struct OneDnnConvPrimitiveDesc {
+                dnnl::convolution_backward_data::primitive_desc,
+                dnnl::convolution_backward_weights::primitive_desc>
+       conv_pd;
++  OneDnnConvWorkspaceLayout workspace;
+ };
+ 
+ // Static convolution properties used by the oneDNN backend.
+@@ -133,13 +153,27 @@ struct OnednnConvBufferPointers {
+   void* side_input_data = nullptr;
+ };
+ 
++// Binds the caller's buffers to the primitive. The scratchpad and the
++// pre-packed filter live inside workspace, which must be at least
++// pd.workspace.total_size bytes and stay valid until the primitive finishes
++// executing on the stream.
+ absl::StatusOr<OneDnnConvPrimitive> CreateOneDnnConvPrimitive(
+     const OneDnnConvPrimitiveDesc& pd, Stream* stream,
+-    const OnednnConvBufferPointers& buffer_pointers);
++    const OnednnConvBufferPointers& buffer_pointers,
++    DeviceAddressBase workspace);
++
++absl::StatusOr<OneDnnConvPrimitiveDesc> CreateOneDnnConvPrimitiveDesc(
++    const OneDnnConvConfig& config, const dnnl::engine& engine);
+ 
+ absl::StatusOr<OneDnnConvPrimitiveDesc> CreateOneDnnConvPrimitiveDesc(
+     const OneDnnConvConfig& config, Stream* stream);
+ 
++// Returns the workspace size, in bytes, that a convolution with this config
++// needs at run time. Used by the compiler, which has no stream, so the
++// primitive descriptor is built on the default oneDNN GPU engine.
++absl::StatusOr<size_t> ComputeOneDnnConvWorkspaceSize(
++    const OneDnnConvConfig& config);
++
+ absl::Status DoOneDnnConv(const OneDnnConvPrimitive& onednn_primitive);
+ 
+ }  // namespace sycl
+diff --git a/xla/stream_executor/sycl/sycl_dnn.cc b/xla/stream_executor/sycl/sycl_dnn.cc
+index 6f03dab7fe..c6d10fd934 100644
+--- a/xla/stream_executor/sycl/sycl_dnn.cc
++++ b/xla/stream_executor/sycl/sycl_dnn.cc
+@@ -15,6 +15,11 @@ limitations under the License.
+ 
+ #include "xla/stream_executor/sycl/sycl_dnn.h"
+ 
++#include <cstddef>
++#include <memory>
++#include <string>
++#include <utility>
++
+ #include "absl/log/log.h"
+ #include "absl/status/status.h"
+ #include "absl/status/status_macros.h"
+@@ -52,93 +57,85 @@ absl::StatusOr<dnn::VersionInfo> OnednnSupport::GetVersion() {
+ namespace {
+ class OnednnConvRunner : public dnn::ConvRunner {
+  public:
+-  OnednnConvRunner(OneDnnConvPrimitiveDesc onednn_conv_primitive_desc,
+-                   size_t workspace_size)
+-      : onednn_conv_primitive_desc_(std::move(onednn_conv_primitive_desc)),
+-        workspace_size_(workspace_size) {}
++  explicit OnednnConvRunner(OneDnnConvPrimitiveDesc onednn_conv_primitive_desc)
++      : onednn_conv_primitive_desc_(std::move(onednn_conv_primitive_desc)) {}
+   std::string ToString() const override { return "OnednnConvRunner"; }
+ 
+-  size_t GetWorkspaceSize() const override { return workspace_size_; }
++  size_t GetWorkspaceSize() const override {
++    return onednn_conv_primitive_desc_.workspace.total_size;
++  }
+ 
+   absl::StatusOr<dnn::AlgorithmDesc> ToAlgorithmDesc() const override {
+-    return dnn::AlgorithmDesc(-1, false, workspace_size_);
++    return dnn::AlgorithmDesc(-1, false, GetWorkspaceSize());
+   }
+ 
+   absl::Status operator()(Stream* stream,
+                           dnn::ProfileResult* output_profile_result,
+-                          [[maybe_unused]] DeviceAddressBase scratch_memory,
++                          DeviceAddressBase scratch_memory,
+                           DeviceAddressBase input_data,
+                           DeviceAddressBase filter_data,
+                           DeviceAddressBase output_data) const override {
+-    // TODO(intel-tf): Create the oneDNN primitives once in the runner and
+-    // report the scratchpad size via GetWorkspaceSize() to avoid per-call
+-    // primitive creation, USM allocation, and host callback.
++    // TODO(intel-tf): Create the oneDNN primitives once in the runner to
++    // avoid per-call primitive creation.
+     ABSL_ASSIGN_OR_RETURN(
+         auto onednn_conv_primitive,
+         CreateOneDnnConvPrimitive(
+             onednn_conv_primitive_desc_, stream,
+             OnednnConvBufferPointers{const_cast<void*>(input_data.opaque()),
+                                      const_cast<void*>(filter_data.opaque()),
+-                                     const_cast<void*>(output_data.opaque())}));
+-    // Execute the oneDNN convolution primitive.
+-    ABSL_RETURN_IF_ERROR(DoOneDnnConv(onednn_conv_primitive));
+-    // Keep the oneDNN convolution primitive alive until the host callback is
+-    // executed.
+-    return stream->DoHostCallback(
+-        [primitive = std::move(onednn_conv_primitive)] {});
++                                     const_cast<void*>(output_data.opaque())},
++            scratch_memory));
++    // The scratchpad and pre-packed filter live in the XLA-owned workspace,
++    // so the primitive can be released as soon as it is enqueued.
++    return DoOneDnnConv(onednn_conv_primitive);
+   }
+ 
+  private:
+   OneDnnConvPrimitiveDesc onednn_conv_primitive_desc_;
+-  size_t workspace_size_ = 0;
+ };
+ 
+ class OnednnFusedConvRunner : public dnn::FusedConvRunner {
+  public:
+-  OnednnFusedConvRunner(OneDnnConvPrimitiveDesc onednn_conv_primitive_desc,
+-                        size_t workspace_size)
+-      : onednn_conv_primitive_desc_(std::move(onednn_conv_primitive_desc)),
+-        workspace_size_(workspace_size) {}
++  explicit OnednnFusedConvRunner(
++      OneDnnConvPrimitiveDesc onednn_conv_primitive_desc)
++      : onednn_conv_primitive_desc_(std::move(onednn_conv_primitive_desc)) {}
+   std::string ToString() const override { return "OnednnFusedConvRunner"; }
+ 
+-  size_t GetWorkspaceSize() const override { return workspace_size_; }
++  size_t GetWorkspaceSize() const override {
++    return onednn_conv_primitive_desc_.workspace.total_size;
++  }
+ 
+   absl::StatusOr<dnn::AlgorithmDesc> ToAlgorithmDesc() const override {
+-    return dnn::AlgorithmDesc(-1, false, workspace_size_);
++    return dnn::AlgorithmDesc(-1, false, GetWorkspaceSize());
+   }
+ 
+   absl::Status operator()(Stream* stream,
+                           dnn::ProfileResult* output_profile_result,
+-                          [[maybe_unused]] DeviceAddressBase scratch_memory,
++                          DeviceAddressBase scratch_memory,
+                           DeviceAddressBase input_data,
+                           DeviceAddressBase filter_data,
+                           DeviceAddressBase side_input_data,
+                           DeviceAddressBase bias_data,
+                           DeviceAddressBase output_data) const override {
+-    // TODO(intel-tf): Create the oneDNN primitives once in the runner and
+-    // report the scratchpad size via GetWorkspaceSize() to avoid per-call
+-    // primitive creation, USM allocation, and host callback.
+-    ABSL_ASSIGN_OR_RETURN(
+-        auto onednn_conv_primitive,
+-        CreateOneDnnConvPrimitive(
+-            onednn_conv_primitive_desc_, stream,
+-            OnednnConvBufferPointers{
+-                const_cast<void*>(input_data.opaque()),
+-                const_cast<void*>(filter_data.opaque()),
+-                const_cast<void*>(output_data.opaque()),
+-                const_cast<void*>(bias_data.opaque()),
+-                const_cast<void*>(side_input_data.opaque())}));
+-    // Execute the oneDNN convolution primitive.
+-    ABSL_RETURN_IF_ERROR(DoOneDnnConv(onednn_conv_primitive));
+-    // Keep the oneDNN convolution primitive alive until the host callback is
+-    // executed.
+-    return stream->DoHostCallback(
+-        [primitive = std::move(onednn_conv_primitive)] {});
++    // TODO(intel-tf): Create the oneDNN primitives once in the runner to
++    // avoid per-call primitive creation.
++    ABSL_ASSIGN_OR_RETURN(auto onednn_conv_primitive,
++                          CreateOneDnnConvPrimitive(
++                              onednn_conv_primitive_desc_, stream,
++                              OnednnConvBufferPointers{
++                                  const_cast<void*>(input_data.opaque()),
++                                  const_cast<void*>(filter_data.opaque()),
++                                  const_cast<void*>(output_data.opaque()),
++                                  const_cast<void*>(bias_data.opaque()),
++                                  const_cast<void*>(side_input_data.opaque())},
++                              scratch_memory));
++    // The scratchpad and pre-packed filter live in the XLA-owned workspace,
++    // so the primitive can be released as soon as it is enqueued.
++    return DoOneDnnConv(onednn_conv_primitive);
+   }
+ 
+  private:
+   OneDnnConvPrimitiveDesc onednn_conv_primitive_desc_;
+-  size_t workspace_size_ = 0;
+ };
+ }  // namespace
+ 
+@@ -157,9 +154,7 @@ OnednnSupport::ConvolveRunnerFromDesc(
+                            filter_descriptor, output_descriptor,
+                            convolution_descriptor},
+           stream));
+-  size_t workspace_size = 0;
+-  return std::make_unique<OnednnConvRunner>(std::move(primitive_desc),
+-                                            workspace_size);
++  return std::make_unique<OnednnConvRunner>(std::move(primitive_desc));
+ }
+ 
+ absl::StatusOr<std::unique_ptr<const dnn::FusedConvRunner>>
+@@ -184,9 +179,7 @@ OnednnSupport::FusedConvolveRunnerFromDesc(
+               OneDnnConvConfig::Fusion{activation_mode, side_input_scale,
+                                        leakyrelu_alpha}},
+           stream));
+-  size_t workspace_size = 0;
+-  return std::make_unique<OnednnFusedConvRunner>(std::move(primitive_desc),
+-                                                 workspace_size);
++  return std::make_unique<OnednnFusedConvRunner>(std::move(primitive_desc));
+ }
+ 
+ void initialize_onednn() {
+diff --git a/xla/stream_executor/sycl/sycl_executor.cc b/xla/stream_executor/sycl/sycl_executor.cc
+index 823fc40a8d..643957c257 100644
+--- a/xla/stream_executor/sycl/sycl_executor.cc
++++ b/xla/stream_executor/sycl/sycl_executor.cc
+@@ -399,6 +399,24 @@ dnn::DnnSupport* SyclExecutor::AsDnn() {
+   return dnn_.get();
+ }
+ 
++fft::FftSupport* SyclExecutor::AsFft() {
++  absl::MutexLock lock(mu_);
++  if (fft_ != nullptr) {
++    return fft_.get();
++  }
++  PluginRegistry* registry = PluginRegistry::Instance();
++  absl::StatusOr<PluginRegistry::FftFactory> status =
++      registry->GetFactory<PluginRegistry::FftFactory>(
++          stream_executor::sycl::kSyclPlatformId);
++  if (!status.ok()) {
++    LOG(ERROR) << "Unable to retrieve FFT factory: "
++               << status.status().message();
++    return nullptr;
++  }
++  fft_.reset(status.value()(this));
++  return fft_.get();
++}
++
+ SyclExecutor::~SyclExecutor() {
+   for (auto& it : in_memory_modules_) {
+     UnloadLevelZeroModule(sycl_context_.get(), it.second);
+diff --git a/xla/stream_executor/sycl/sycl_executor.h b/xla/stream_executor/sycl/sycl_executor.h
+index e1fa5c23a2..d80692a5d9 100644
+--- a/xla/stream_executor/sycl/sycl_executor.h
++++ b/xla/stream_executor/sycl/sycl_executor.h
+@@ -22,6 +22,7 @@ limitations under the License.
+ #include "absl/status/statusor.h"
+ #include "absl/synchronization/mutex.h"
+ #include "xla/stream_executor/dnn.h"
++#include "xla/stream_executor/fft.h"
+ #include "xla/stream_executor/gpu/gpu_executor.h"
+ #include "xla/stream_executor/memory_space.h"
+ #include "xla/stream_executor/platform.h"
+@@ -49,6 +50,9 @@ class SyclExecutor : public gpu::GpuExecutor {
+   // Returns the DNN support implementation for SYCL.
+   dnn::DnnSupport* AsDnn() override;
+ 
++  // Returns the FFT support implementation for SYCL.
++  fft::FftSupport* AsFft() override;
++
+   // Loads a kernel from the given KernelLoaderSpec, which contains the SPIR-V
+   // binary and kernel metadata.
+   // Returns a unique_ptr to the loaded kernel or error status.
+@@ -242,6 +246,7 @@ class SyclExecutor : public gpu::GpuExecutor {
+   absl::Mutex mu_;
+   std::unique_ptr<blas::BlasSupport> blas_ ABSL_GUARDED_BY(mu_);
+   std::unique_ptr<dnn::DnnSupport> dnn_ ABSL_GUARDED_BY(mu_);
++  std::unique_ptr<fft::FftSupport> fft_ ABSL_GUARDED_BY(mu_);
+   absl::Status InitBlas();
+ };
+ 
+diff --git a/xla/stream_executor/sycl/sycl_fft.cc b/xla/stream_executor/sycl/sycl_fft.cc
+new file mode 100644
+index 0000000000..271cce47c8
+--- /dev/null
++++ b/xla/stream_executor/sycl/sycl_fft.cc
+@@ -0,0 +1,703 @@
++/* Copyright 2026 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#include "xla/stream_executor/sycl/sycl_fft.h"
++
++#include <complex>
++#include <cstdint>
++#include <functional>
++#include <memory>
++#include <type_traits>
++#include <utility>
++#include <variant>
++#include <vector>
++
++#include "absl/base/casts.h"
++#include "absl/log/log.h"
++#include "absl/status/status.h"
++#include "absl/status/statusor.h"
++#include "absl/strings/str_cat.h"
++#include "oneapi/mkl/dft.hpp"
++#include "xla/stream_executor/device_address.h"
++#include "xla/stream_executor/fft.h"
++#include "xla/stream_executor/gpu/gpu_helpers.h"
++#include "xla/stream_executor/platform/initialize.h"
++#include "xla/stream_executor/plugin_registry.h"
++#include "xla/stream_executor/scratch_allocator.h"
++#include "xla/stream_executor/stream.h"
++#include "xla/stream_executor/stream_executor.h"
++#include "xla/stream_executor/sycl/onemkl_util.h"
++#include "xla/stream_executor/sycl/sycl_platform_id.h"
++
++namespace stream_executor {
++namespace sycl {
++
++using gpu::GpuMemory;
++using gpu::GpuMemoryMutable;
++
++namespace dft = oneapi::mkl::dft;
++
++namespace {
++
++template <dft::precision P, dft::domain D>
++using Descriptor = dft::descriptor<P, D>;
++
++// The real scalar type oneMKL uses for a given descriptor precision.
++template <dft::precision P>
++using RealScalar =
++    std::conditional_t<P == dft::precision::DOUBLE, double, float>;
++
++// The oneMKL routine that computes a transform.
++//
++// oneMKL only instantiates compute_forward() for the real -> complex direction
++// of a real transform and compute_backward() for its complex -> real
++// direction, so for those the routine follows from the element types and has
++// to be picked at compile time. A complex-to-complex transform in contrast
++// uses the same element types and the same descriptor for both directions, so
++// there the routine is only known once the plan is created.
++enum class Direction { kForward, kBackward, kFromPlan };
++
++// Maps the element types of a DoFft() call onto the oneMKL descriptor that has
++// to back the plan, and onto the routine the transform is computed with.
++template <typename InputT, typename OutputT>
++struct OneMklFftTraits;
++
++#define STREAM_EXECUTOR_SYCL_FFT_TRAITS(__input, __output, __precision,       \
++                                        __domain, __direction)                \
++  template <>                                                                 \
++  struct OneMklFftTraits<__input, __output> {                                 \
++    static constexpr dft::precision kPrecision = dft::precision::__precision; \
++    static constexpr dft::domain kDomain = dft::domain::__domain;             \
++    static constexpr Direction kDirection = Direction::__direction;           \
++  }
++
++// input type, output type, precision, domain, direction:
++STREAM_EXECUTOR_SYCL_FFT_TRAITS(std::complex<float>, std::complex<float>,
++                                SINGLE, COMPLEX, kFromPlan);
++STREAM_EXECUTOR_SYCL_FFT_TRAITS(std::complex<double>, std::complex<double>,
++                                DOUBLE, COMPLEX, kFromPlan);
++STREAM_EXECUTOR_SYCL_FFT_TRAITS(float, std::complex<float>,  //
++                                SINGLE, REAL, kForward);
++STREAM_EXECUTOR_SYCL_FFT_TRAITS(double, std::complex<double>,  //
++                                DOUBLE, REAL, kForward);
++STREAM_EXECUTOR_SYCL_FFT_TRAITS(std::complex<float>, float,  //
++                                SINGLE, REAL, kBackward);
++STREAM_EXECUTOR_SYCL_FFT_TRAITS(std::complex<double>, double,  //
++                                DOUBLE, REAL, kBackward);
++
++#undef STREAM_EXECUTOR_SYCL_FFT_TRAITS
++
++// Returns true for the transforms oneMKL computes with compute_forward().
++bool IsForward(fft::Type type) {
++  switch (type) {
++    case fft::Type::kC2CForward:
++    case fft::Type::kZ2ZForward:
++    case fft::Type::kR2C:
++    case fft::Type::kD2Z:
++      return true;
++    default:
++      return false;
++  }
++}
++
++// Returns true if the transform's backward domain holds the conjugate-even
++// (i.e. only n/2+1 elements along the last axis) representation of the signal.
++bool IsRealTransform(fft::Type type) {
++  switch (type) {
++    case fft::Type::kR2C:
++    case fft::Type::kD2Z:
++    case fft::Type::kC2R:
++    case fft::Type::kZ2D:
++      return true;
++    default:
++      return false;
++  }
++}
++
++// Returns the layout of one of the transform's domains, expressed as the oneMKL
++// stride vector {offset, stride_of_dim_0, ..., stride_of_dim_rank-1}.
++//
++// `embed` is the plan's `input_embed` or `output_embed`: the storage dimensions
++// of the data, which may exceed the transform itself when the signal is padded.
++// `elem_stride` is the distance between two successive elements along the last
++// axis. If `embed` is null the data is assumed to be densely packed, in which
++// case the dimensions are `fft_length`, except that the last axis of a
++// conjugate-even domain only holds n/2+1 elements.
++std::vector<std::int64_t> DomainStrides(int rank, const std::uint64_t* embed,
++                                       std::uint64_t elem_stride,
++                                       const std::uint64_t* fft_length,
++                                       bool conjugate_even) {
++  std::vector<std::int64_t> dims(rank);
++  for (int i = 0; i < rank; ++i) {
++    dims[i] = embed != nullptr ? embed[i] : fft_length[i];
++  }
++  if (embed == nullptr && conjugate_even) {
++    dims[rank - 1] = dims[rank - 1] / 2 + 1;
++  }
++
++  // Row-major strides: the last axis is the fastest varying one. The dimensions
++  // arrive in major-to-minor order from the FFT thunk.
++  std::vector<std::int64_t> strides(rank + 1);
++  strides[0] = 0;  // Offset of the first element of a transform.
++  std::int64_t stride = elem_stride;
++  for (int i = rank; i >= 1; --i) {
++    strides[i] = stride;
++    stride *= dims[i - 1];
++  }
++  return strides;
++}
++
++// Returns the SYCL queue backing `stream`.
++::sycl::queue* SyclQueue(Stream* stream) {
++  return absl::bit_cast<::sycl::queue*>(
++      stream->platform_specific_handle().stream);
++}
++
++// Memory layout of the input of a complex -> real transform.
++struct ConjugateEvenLayout {
++  int rank = 0;
++  // Logical length and element stride of every transformed axis.
++  std::int64_t lengths[3] = {1, 1, 1};
++  std::int64_t strides[3] = {0, 0, 0};
++  // Elements between two consecutive transforms of the batch.
++  std::int64_t distance = 0;
++  int batch_count = 1;
++  // Elements stored along the last transformed axis, n / 2 + 1 when the data is
++  // densely packed.
++  std::int64_t last_extent = 0;
++};
++
++// oneMKL expects the input of a complex -> real transform to be conjugate-even,
++// i.e. X[-j] == conj(X[j]). XLA does not require this. Like NumPy, it ignores
++// the imaginary parts of the DC element (index 0) and the Nyquist element
++// (index N/2, when N is even) of the last axis, and jnp.fft.hfft() depends on
++// that. oneMKL uses them, so for example [0, 0, i] gives -1 everywhere instead
++// of all zeros.
++//
++// This sanitizes the input to match XLA: on the DC and Nyquist slices of the
++// last axis, it replaces X[j] with (X[j] + conj(X[-j])) / 2. A valid input is
++// not changed. For rank 1 this just sets the two imaginary parts to zero.
++template <typename ComplexT>
++absl::Status ProjectConjugateEvenHyperplanes(
++    ::sycl::queue* queue, ComplexT* data, const ConjugateEvenLayout& layout) {
++  using RealT = typename ComplexT::value_type;
++
++  const int rank = layout.rank;
++  if (rank < 1 || rank > 3) {
++    return absl::InternalError(absl::StrCat(
++        "The plan of a complex -> real oneMKL DFT recorded no conjugate-even "
++        "domain of rank 1, 2 or 3, but one of rank ",
++        rank, "."));
++  }
++  // The rank is at most 3, so there are at most two leading axes.
++  const std::int64_t n0 = rank > 1 ? layout.lengths[0] : 1;
++  const std::int64_t n1 = rank > 2 ? layout.lengths[1] : 1;
++  const std::int64_t stride0 = rank > 1 ? layout.strides[0] : 0;
++  const std::int64_t stride1 = rank > 2 ? layout.strides[1] : 0;
++  const std::int64_t last_length = layout.lengths[rank - 1];
++  const std::int64_t last_stride = layout.strides[rank - 1];
++  const std::int64_t distance = layout.distance;
++  const std::int64_t hyperplane_size = n0 * n1;
++  const std::int64_t element_count = layout.batch_count * hyperplane_size;
++  if (element_count <= 0 || layout.last_extent < 1) return absl::OkStatus();
++
++  // An odd length has no Nyquist element. Also skip it if the input does not
++  // store index N/2.
++  const std::int64_t hyperplanes[2] = {0, last_length / 2};
++  const int hyperplane_count =
++      last_length % 2 == 0 && last_length / 2 < layout.last_extent ? 2 : 1;
++
++  // Access the real and imaginary parts directly. std::complex<T> has the same
++  // layout as T[2].
++  auto* elements = reinterpret_cast<RealT*>(data);
++
++  return ExecMklFunc([&] {
++    for (int i = 0; i < hyperplane_count; ++i) {
++      const std::int64_t hyperplane_offset = hyperplanes[i] * last_stride;
++      queue->parallel_for(
++          ::sycl::range<1>(element_count), [=](::sycl::id<1> id) {
++            const std::int64_t index = static_cast<std::int64_t>(id[0]);
++            const std::int64_t j1 = index % n1;
++            const std::int64_t j0 = (index / n1) % n0;
++            const std::int64_t batch = index / hyperplane_size;
++            const std::int64_t mirror0 = j0 == 0 ? 0 : n0 - j0;
++            const std::int64_t mirror1 = j1 == 0 ? 0 : n1 - j1;
++            // An element and its mirror depend on each other, so only one work
++            // item of each pair updates both.
++            if (mirror0 * n1 + mirror1 < j0 * n1 + j1) return;
++            const std::int64_t base = batch * distance + hyperplane_offset;
++            const std::int64_t self = 2 * (base + j0 * stride0 + j1 * stride1);
++            const std::int64_t mirror =
++                2 * (base + mirror0 * stride0 + mirror1 * stride1);
++            const RealT real = (elements[self] + elements[mirror]) / 2;
++            const RealT imag = (elements[self + 1] - elements[mirror + 1]) / 2;
++            elements[self] = real;
++            elements[self + 1] = imag;
++            elements[mirror] = real;
++            elements[mirror + 1] = -imag;
++          });
++    }
++  });
++}
++
++template <typename InputT>
++DeviceAddress<InputT> ConjugateEvenInput(Stream* stream,
++                                         const DeviceAddress<InputT>& input,
++                                         ScratchAllocator* scratch_allocator,
++                                         const ConjugateEvenLayout& layout) {
++  if (scratch_allocator == nullptr) {
++    LOG(ERROR) << "No scratch allocator to copy the input of a complex -> real "
++                  "oneMKL DFT with.";
++    return input;
++  }
++  absl::StatusOr<DeviceAddress<std::uint8_t>> scratch =
++      scratch_allocator->AllocateBytes(input.size());
++  if (!scratch.ok()) {
++    LOG(ERROR) << "Failed to allocate " << input.size()
++               << " bytes for a copy of the input of a complex -> real oneMKL "
++                  "DFT: "
++               << scratch.status().message();
++    return input;
++  }
++  DeviceAddress<InputT> input_copy(*scratch);
++  if (absl::Status status = stream->Memcpy(&input_copy, input, input.size());
++      !status.ok()) {
++    LOG(ERROR) << "Failed to copy the input of a complex -> real oneMKL DFT: "
++               << status.message();
++    return input;
++  }
++  if (absl::Status status = ProjectConjugateEvenHyperplanes(
++          SyclQueue(stream), GpuMemoryMutable(&input_copy), layout);
++      !status.ok()) {
++    LOG(ERROR) << "Failed to preprocess the input of a complex -> real oneMKL "
++                  "DFT: "
++               << status.message();
++    return input;
++  }
++  return input_copy;
++}
++
++// An FFT plan holding a committed oneMKL DFT descriptor. The descriptor type
++// depends on the precision and the domain of the transform, so the plan keeps
++// it in a variant and hands it back to the (templated) execute path.
++//
++// Like the other fft::Plan implementations, a plan is not internally
++// synchronized: callers serialize access to it. FftThunk does so by holding
++// FftPlan::mu across both the creation and the execution of a plan.
++class SyclFftPlan : public fft::Plan {
++ public:
++  absl::Status Initialize(Stream* stream, int rank, std::uint64_t* fft_length,
++                          std::uint64_t* input_embed,
++                          std::uint64_t input_stride,
++                          std::uint64_t input_distance,
++                          std::uint64_t* output_embed,
++                          std::uint64_t output_stride,
++                          std::uint64_t output_distance, fft::Type type,
++                          bool in_place_fft, int batch_count);
++
++  // Returns the descriptor of the plan, or null if the plan was created for a
++  // different precision or domain.
++  template <dft::precision P, dft::domain D>
++  Descriptor<P, D>* GetDescriptor() {
++    auto* holder = std::get_if<std::unique_ptr<Descriptor<P, D>>>(&descriptor_);
++    return holder == nullptr ? nullptr : holder->get();
++  }
++
++  // Commits this plan's descriptor to `queue`, unless it is already committed
++  // there.
++  //
++  // oneMKL needs a descriptor committed after configuration and before any
++  // transform. commit() validates the configuration, factorizes the lengths to
++  // pick a computation method and allocates the internal work area, throwing if
++  // it cannot; ExecMklFunc() turns that into a Status.
++  //
++  // It also binds the descriptor to `queue`: compute_forward() and
++  // compute_backward() take no queue and enqueue on the last-committed one.
++  // Since FftPlanCache caches a plan per device ordinal rather than per stream,
++  // a plan reused on another stream must be re-committed to run there. Commit
++  // is the expensive planning step, so an already-committed queue is skipped --
++  // safe because each plan owns exactly one descriptor.
++  absl::Status CommitOn(::sycl::queue* queue);
++
++  bool is_forward() const { return is_forward_; }
++
++  // Input layout of a complex -> real transform. rank is 0 for other
++  // transforms.
++  const ConjugateEvenLayout& conjugate_even_layout() const {
++    return conjugate_even_layout_;
++  }
++
++  // Allocator for the input copy of a complex -> real transform, or null.
++  // fft_thunk.cc sets it before each execution.
++  ScratchAllocator* scratch_allocator() const { return scratch_allocator_; }
++  void set_scratch_allocator(ScratchAllocator* scratch_allocator) {
++    scratch_allocator_ = scratch_allocator;
++  }
++
++ private:
++  // Sets up the descriptor for the given precision and domain: applies the
++  // configuration below to a fresh descriptor, stores it in `descriptor_` along
++  // with the `commit_` that goes with it, and commits it to the queue of
++  // `stream`. `lengths` are the logical transform dimensions, the strides and
++  // distances describe the forward and the backward domain respectively.
++  template <dft::precision P, dft::domain D>
++  absl::Status ConfigureDescriptor(Stream* stream,
++                                   std::vector<std::int64_t> lengths,
++                                   const std::vector<std::int64_t>& fwd_strides,
++                                   const std::vector<std::int64_t>& bwd_strides,
++                                   std::int64_t fwd_distance,
++                                   std::int64_t bwd_distance, int batch_count);
++
++  std::variant<std::monostate,
++               std::unique_ptr<Descriptor<dft::precision::SINGLE,
++                                          dft::domain::COMPLEX>>,
++               std::unique_ptr<
++                   Descriptor<dft::precision::SINGLE, dft::domain::REAL>>,
++               std::unique_ptr<Descriptor<dft::precision::DOUBLE,
++                                          dft::domain::COMPLEX>>,
++               std::unique_ptr<
++                   Descriptor<dft::precision::DOUBLE, dft::domain::REAL>>>
++      descriptor_;
++
++  // Commits the type-erased descriptor above to a queue.
++  std::function<void(::sycl::queue&)> commit_;
++
++  // Queue the descriptor above is currently committed to. Only ever compared
++  // against the descriptor it belongs to; it says nothing about the descriptors
++  // of other plans that may run on the same queue.
++  ::sycl::queue* committed_queue_ = nullptr;
++
++  bool is_forward_ = false;
++
++  ConjugateEvenLayout conjugate_even_layout_;
++
++  ScratchAllocator* scratch_allocator_ = nullptr;
++};
++
++template <dft::precision P, dft::domain D>
++absl::Status SyclFftPlan::ConfigureDescriptor(
++    Stream* stream, std::vector<std::int64_t> lengths,
++    const std::vector<std::int64_t>& fwd_strides,
++    const std::vector<std::int64_t>& bwd_strides, std::int64_t fwd_distance,
++    std::int64_t bwd_distance, int batch_count) {
++  auto descriptor = std::make_unique<Descriptor<P, D>>(std::move(lengths));
++  // set_value() reports a rejected parameter by throwing, and ExecMklFunc()
++  // turns that into a Status. Setting everything inside one lambda therefore
++  // needs a single try/catch instead of one per parameter: the first rejected
++  // parameter skips the rest, and its message is returned below.
++  absl::Status status = ExecMklFunc([&] {
++    Descriptor<P, D>& desc = *descriptor;
++    desc.set_value(dft::config_param::NUMBER_OF_TRANSFORMS,
++                   static_cast<std::int64_t>(batch_count));
++    desc.set_value(dft::config_param::PLACEMENT,
++                   dft::config_value::NOT_INPLACE);
++    if constexpr (D == dft::domain::COMPLEX) {
++      desc.set_value(dft::config_param::COMPLEX_STORAGE,
++                     dft::config_value::COMPLEX_COMPLEX);
++    }
++    // The backward domain of a real transform holds the n/2+1 complex
++    // elements of the conjugate-even spectrum interleaved, which is the
++    // layout XLA expects. That is the only storage oneMKL
++    // supports
++    desc.set_value(dft::config_param::FWD_STRIDES, fwd_strides);
++    desc.set_value(dft::config_param::BWD_STRIDES, bwd_strides);
++    desc.set_value(dft::config_param::FWD_DISTANCE, fwd_distance);
++    desc.set_value(dft::config_param::BWD_DISTANCE, bwd_distance);
++    // XLA expects unnormalized transforms in both directions; the 1/n
++    // scaling of inverse transforms is applied by the caller (see
++    // fft_thunk.cc).
++    desc.set_value(dft::config_param::FORWARD_SCALE, RealScalar<P>{1});
++    desc.set_value(dft::config_param::BACKWARD_SCALE, RealScalar<P>{1});
++  });
++  if (!status.ok()) {
++    return absl::InternalError(absl::StrCat(
++        "Failed to configure the oneMKL DFT descriptor: ", status.message()));
++  }
++
++  Descriptor<P, D>* descriptor_ptr = descriptor.get();
++  commit_ = [descriptor_ptr](::sycl::queue& queue) {
++    descriptor_ptr->commit(queue);
++  };
++  descriptor_ = std::move(descriptor);
++  return CommitOn(SyclQueue(stream));
++}
++
++absl::Status SyclFftPlan::CommitOn(::sycl::queue* queue) {
++  // `committed_queue_` is per-plan state, not shared: it records the queue that
++  // *this* plan's one descriptor is committed on. A different plan on the same
++  // queue has its own, still null, so it commits its own descriptor rather than
++  // skipping here.
++  if (queue == committed_queue_) {
++    return absl::OkStatus();
++  }
++  absl::Status status = ExecMklFunc([&] { commit_(*queue); });
++  if (!status.ok()) {
++    return absl::InternalError(absl::StrCat(
++        "Failed to commit the oneMKL DFT descriptor: ", status.message()));
++  }
++  committed_queue_ = queue;
++  return absl::OkStatus();
++}
++
++absl::Status SyclFftPlan::Initialize(
++    Stream* stream, int rank, std::uint64_t* fft_length,
++    std::uint64_t* input_embed, std::uint64_t input_stride,
++    std::uint64_t input_distance, std::uint64_t* output_embed,
++    std::uint64_t output_stride, std::uint64_t output_distance, fft::Type type,
++    bool in_place_fft, int batch_count) {
++  if (rank < 1 || rank > 3) {
++    return absl::InvalidArgumentError(absl::StrCat(
++        "oneMKL DFT only supports rank 1, 2 or 3, given: ", rank));
++  }
++  if (in_place_fft) {
++    return absl::UnimplementedError(
++        "In-place FFT is not implemented for the SYCL platform.");
++  }
++  if (!std::holds_alternative<std::monostate>(descriptor_)) {
++    return absl::InternalError("oneMKL DFT plan should be uninitialized.");
++  }
++  is_forward_ = IsForward(type);
++  const bool conjugate_even = IsRealTransform(type);
++
++  std::vector<std::int64_t> lengths(rank);
++  for (int i = 0; i < rank; ++i) {
++    lengths[i] = static_cast<std::int64_t>(fft_length[i]);
++  }
++
++  // The forward domain holds the (real or complex) signal, the backward domain
++  // its spectrum. Which one of them is the input depends on the direction.
++  const bool input_is_forward_domain = is_forward_;
++  const std::uint64_t* fwd_embed =
++      input_is_forward_domain ? input_embed : output_embed;
++  const std::uint64_t* bwd_embed =
++      input_is_forward_domain ? output_embed : input_embed;
++  const std::uint64_t fwd_elem_stride =
++      input_is_forward_domain ? input_stride : output_stride;
++  const std::uint64_t bwd_elem_stride =
++      input_is_forward_domain ? output_stride : input_stride;
++  const std::int64_t fwd_distance = static_cast<std::int64_t>(
++      input_is_forward_domain ? input_distance : output_distance);
++  const std::int64_t bwd_distance = static_cast<std::int64_t>(
++      input_is_forward_domain ? output_distance : input_distance);
++
++  const std::vector<std::int64_t> fwd_strides = DomainStrides(
++      rank, fwd_embed, fwd_elem_stride, fft_length, /*conjugate_even=*/false);
++  const std::vector<std::int64_t> bwd_strides =
++      DomainStrides(rank, bwd_embed, bwd_elem_stride, fft_length,
++                    /*conjugate_even=*/conjugate_even);
++
++  // Save the input layout of a complex -> real transform for
++  // ProjectConjugateEvenHyperplanes(). This must happen before the switch below
++  // moves `lengths` into the descriptor.
++  if (conjugate_even && !is_forward_) {
++    conjugate_even_layout_.rank = rank;
++    for (int i = 0; i < rank; ++i) {
++      conjugate_even_layout_.lengths[i] = lengths[i];
++      conjugate_even_layout_.strides[i] = bwd_strides[i + 1];
++    }
++    conjugate_even_layout_.distance = bwd_distance;
++    conjugate_even_layout_.batch_count = batch_count;
++    conjugate_even_layout_.last_extent =
++        bwd_embed != nullptr ? static_cast<std::int64_t>(bwd_embed[rank - 1])
++                             : lengths[rank - 1] / 2 + 1;
++  }
++
++  switch (type) {
++    case fft::Type::kC2CForward:
++    case fft::Type::kC2CInverse:
++      return ConfigureDescriptor<dft::precision::SINGLE, dft::domain::COMPLEX>(
++          stream, std::move(lengths), fwd_strides, bwd_strides, fwd_distance,
++          bwd_distance, batch_count);
++    case fft::Type::kZ2ZForward:
++    case fft::Type::kZ2ZInverse:
++      return ConfigureDescriptor<dft::precision::DOUBLE, dft::domain::COMPLEX>(
++          stream, std::move(lengths), fwd_strides, bwd_strides, fwd_distance,
++          bwd_distance, batch_count);
++    case fft::Type::kR2C:
++    case fft::Type::kC2R:
++      return ConfigureDescriptor<dft::precision::SINGLE, dft::domain::REAL>(
++          stream, std::move(lengths), fwd_strides, bwd_strides, fwd_distance,
++          bwd_distance, batch_count);
++    case fft::Type::kD2Z:
++    case fft::Type::kZ2D:
++      return ConfigureDescriptor<dft::precision::DOUBLE, dft::domain::REAL>(
++          stream, std::move(lengths), fwd_strides, bwd_strides, fwd_distance,
++          bwd_distance, batch_count);
++    default:
++      return absl::InvalidArgumentError("Invalid value of fft::Type.");
++  }
++}
++
++}  // namespace
++
++std::unique_ptr<fft::Plan> SyclFft::CreateBatchedPlanWithScratchAllocator(
++    Stream* stream, int rank, std::uint64_t* fft_length,
++    std::uint64_t* input_embed, std::uint64_t input_stride,
++    std::uint64_t input_distance, std::uint64_t* output_embed,
++    std::uint64_t output_stride, std::uint64_t output_distance, fft::Type type,
++    bool in_place_fft, int batch_count, ScratchAllocator* scratch_allocator) {
++  auto fft_plan = std::make_unique<SyclFftPlan>();
++  // oneMKL manages the work area of a descriptor itself, so the allocator is
++  // only used for the input copy of a complex -> real transform.
++  fft_plan->set_scratch_allocator(scratch_allocator);
++  absl::Status status = fft_plan->Initialize(
++      stream, rank, fft_length, input_embed, input_stride, input_distance,
++      output_embed, output_stride, output_distance, type, in_place_fft,
++      batch_count);
++  if (!status.ok()) {
++    LOG(ERROR) << "Failed to initialize batched oneMKL DFT plan: "
++               << status.message() << ". Initialize params: rank: " << rank
++               << " fft_length: " << *fft_length
++               << " input_stride: " << input_stride
++               << " input_distance: " << input_distance
++               << " output_stride: " << output_stride
++               << " output_distance: " << output_distance
++               << " batch_count: " << batch_count;
++    return nullptr;
++  }
++  return fft_plan;
++}
++
++void SyclFft::UpdatePlanWithScratchAllocator(
++    Stream* stream, fft::Plan* plan, ScratchAllocator* scratch_allocator) {
++  // oneMKL allocates its own work area. The allocator is only used to copy the
++  // input of a complex -> real transform, and changes before every execution.
++  SyclFftPlan* sycl_fft_plan = dynamic_cast<SyclFftPlan*>(plan);
++  if (sycl_fft_plan == nullptr) {
++    LOG(ERROR) << "The passed-in plan is not a SyclFftPlan object.";
++    return;
++  }
++  sycl_fft_plan->set_scratch_allocator(scratch_allocator);
++}
++
++template <typename InputT, typename OutputT>
++bool SyclFft::DoFftInternal(Stream* stream, fft::Plan* plan,
++                            const DeviceAddress<InputT>& input,
++                            DeviceAddress<OutputT>* output) {
++  SyclFftPlan* sycl_fft_plan = dynamic_cast<SyclFftPlan*>(plan);
++  if (sycl_fft_plan == nullptr) {
++    LOG(ERROR) << "The passed-in plan is not a SyclFftPlan object.";
++    return false;
++  }
++
++  using Traits = OneMklFftTraits<InputT, OutputT>;
++  auto* descriptor =
++      sycl_fft_plan->GetDescriptor<Traits::kPrecision, Traits::kDomain>();
++  if (descriptor == nullptr) {
++    LOG(ERROR) << "The oneMKL DFT plan was created for a different precision "
++                  "or domain than the one the transform is run with.";
++    return false;
++  }
++
++  if (absl::Status status = sycl_fft_plan->CommitOn(SyclQueue(stream));
++      !status.ok()) {
++    LOG(ERROR) << status.message();
++    return false;
++  }
++
++  constexpr Direction kDirection = Traits::kDirection;
++  if constexpr (kDirection != Direction::kFromPlan) {
++    if (sycl_fft_plan->is_forward() != (kDirection == Direction::kForward)) {
++      LOG(ERROR) << "The oneMKL DFT plan was created for the direction "
++                    "opposite to the one the element types of the transform "
++                    "imply.";
++      return false;
++    }
++  }
++
++  // A complex -> real transform runs on a preprocessed copy of the input, so
++  // the result matches the other XLA backends.
++  DeviceAddress<InputT> transform_input = input;
++  if constexpr (kDirection == Direction::kBackward) {
++    transform_input =
++        ConjugateEvenInput(stream, input, sycl_fft_plan->scratch_allocator(),
++                           sycl_fft_plan->conjugate_even_layout());
++  }
++
++  // The queues created by SyclStream are in-order, so the transform is ordered
++  // against the rest of the stream without tracking events explicitly.
++  auto* in = const_cast<InputT*>(GpuMemory(transform_input));
++  auto* out = GpuMemoryMutable(output);
++  auto compute = [&](auto&& mkl_func) {
++    absl::StatusOr<::sycl::event> event =
++        ExecMklFunc([&] { return mkl_func(*descriptor, in, out); });
++    if (!event.ok()) {
++      LOG(ERROR) << "Failed to run the oneMKL DFT routine: "
++                 << event.status().message();
++      return false;
++    }
++    return true;
++  };
++
++  // Generic lambdas, so only the routine for the direction taken below is
++  // instantiated. oneMKL has no complex -> real compute_forward() or
++  // real -> complex compute_backward(), and referencing either fails to link.
++  auto forward = [](auto&&... args) {
++    return dft::compute_forward(std::forward<decltype(args)>(args)...);
++  };
++  auto backward = [](auto&&... args) {
++    return dft::compute_backward(std::forward<decltype(args)>(args)...);
++  };
++
++  if constexpr (kDirection == Direction::kForward) {
++    return compute(forward);
++  } else if constexpr (kDirection == Direction::kBackward) {
++    return compute(backward);
++  } else {
++    static_assert(kDirection == Direction::kFromPlan);
++    return sycl_fft_plan->is_forward() ? compute(forward) : compute(backward);
++  }
++}
++
++#define STREAM_EXECUTOR_SYCL_DEFINE_FFT(__type)                       \
++  bool SyclFft::DoFft(Stream* stream, fft::Plan* plan,                \
++                      const DeviceAddress<std::complex<__type>>& input, \
++                      DeviceAddress<std::complex<__type>>* output) {  \
++    return DoFftInternal(stream, plan, input, output);                \
++  }                                                                   \
++  bool SyclFft::DoFft(Stream* stream, fft::Plan* plan,                \
++                      const DeviceAddress<__type>& input,             \
++                      DeviceAddress<std::complex<__type>>* output) {  \
++    return DoFftInternal(stream, plan, input, output);                \
++  }                                                                   \
++  bool SyclFft::DoFft(Stream* stream, fft::Plan* plan,                \
++                      const DeviceAddress<std::complex<__type>>& input, \
++                      DeviceAddress<__type>* output) {                \
++    return DoFftInternal(stream, plan, input, output);                \
++  }
++
++STREAM_EXECUTOR_SYCL_DEFINE_FFT(float)
++STREAM_EXECUTOR_SYCL_DEFINE_FFT(double)
++
++#undef STREAM_EXECUTOR_SYCL_DEFINE_FFT
++
++void initialize_onemkl_fft() {
++  absl::Status status =
++      PluginRegistry::Instance()->RegisterFactory<PluginRegistry::FftFactory>(
++          sycl::kSyclPlatformId, "oneMKL DFT",
++          [](StreamExecutor* parent) -> fft::FftSupport* {
++            return new sycl::SyclFft(parent);
++          });
++  if (!status.ok()) {
++    LOG(ERROR) << "Unable to register oneMKL DFT factory: " << status.message();
++  }
++}
++
++}  // namespace sycl
++}  // namespace stream_executor
++
++STREAM_EXECUTOR_REGISTER_MODULE_INITIALIZER(register_onemkl_fft, {
++  stream_executor::sycl::initialize_onemkl_fft();
++});
+diff --git a/xla/stream_executor/sycl/sycl_fft.h b/xla/stream_executor/sycl/sycl_fft.h
+new file mode 100644
+index 0000000000..fc907170c0
+--- /dev/null
++++ b/xla/stream_executor/sycl/sycl_fft.h
+@@ -0,0 +1,74 @@
++/* Copyright 2026 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++// SYCL-specific support for FFT functionality -- this wraps the oneMKL DFT
++// library capabilities. The oneMKL headers are only included from the
++// implementation file so that they don't leak into other code.
++
++#ifndef XLA_STREAM_EXECUTOR_SYCL_SYCL_FFT_H_
++#define XLA_STREAM_EXECUTOR_SYCL_SYCL_FFT_H_
++
++#include <complex>
++#include <cstdint>
++#include <memory>
++
++#include "xla/stream_executor/fft.h"
++#include "xla/stream_executor/scratch_allocator.h"
++#include "xla/stream_executor/stream.h"
++#include "xla/stream_executor/stream_executor.h"
++
++namespace stream_executor {
++namespace sycl {
++
++// FFT support for the SYCL platform via the oneMKL DFT domain.
++//
++// This satisfies the platform-agnostic FftSupport interface. The oneMKL
++// descriptors that back the plans are committed to the SYCL queue of the
++// stream the FFT runs on; a plan is re-committed transparently if it is
++// later used with a different stream.
++class SyclFft : public fft::FftSupport {
++ public:
++  explicit SyclFft(StreamExecutor* parent) : parent_(parent) {}
++  ~SyclFft() override = default;
++
++  TENSORFLOW_STREAM_EXECUTOR_GPU_FFT_SUPPORT_OVERRIDES
++
++ private:
++  // Shared implementation of all the DoFft() overloads: transforms the input
++  // buffer into the output buffer using the descriptor held by the plan.
++  //
++  // The element types select that descriptor: float or double picks the
++  // precision, and whether the buffers are real or complex picks the domain.
++  // They also constrain the direction, because a real input can only be
++  // transformed forward and a real output only backward. Complex-to-complex
++  // transforms can go either way, so those take their direction from the plan.
++  template <typename InputT, typename OutputT>
++  bool DoFftInternal(Stream* stream, fft::Plan* plan,
++                     const DeviceAddress<InputT>& input,
++                     DeviceAddress<OutputT>* output);
++
++  StreamExecutor* parent_;
++
++  SyclFft(const SyclFft&) = delete;
++  void operator=(const SyclFft&) = delete;
++};
++
++// Registers the oneMKL DFT factory with the plugin registry.
++void initialize_onemkl_fft();
++
++}  // namespace sycl
++}  // namespace stream_executor
++
++#endif  // XLA_STREAM_EXECUTOR_SYCL_SYCL_FFT_H_
+diff --git a/xla/stream_executor/sycl/sycl_gpu_runtime.cc b/xla/stream_executor/sycl/sycl_gpu_runtime.cc
+index b0d32397f9..e8d8efb175 100644
+--- a/xla/stream_executor/sycl/sycl_gpu_runtime.cc
++++ b/xla/stream_executor/sycl/sycl_gpu_runtime.cc
+@@ -18,6 +18,7 @@ limitations under the License.
+ #include <cassert>
+ #include <cstdint>
+ #include <iostream>
++#include <optional>
+ #include <limits>
+ #include <vector>
+ 
+@@ -46,11 +47,8 @@ absl::Status IsValidDeviceOrdinal(int device_ordinal,
+ // Returns true if the oneAPI version is 2024.2 or newer.
+ // oneAPI 2024.2 corresponds to __LIBSYCL_MAJOR_VERSION == 7 and
+ // __LIBSYCL_MINOR_VERSION == 2.
+-// oneAPI 2025.x corresponds to __LIBSYCL_MAJOR_VERSION == 8, and
+-// oneAPI 2026.x corresponds to __LIBSYCL_MAJOR_VERSION == 9.
+ bool IsOneAPIVersionAtLeast2024_2() {
+-  return ((__LIBSYCL_MAJOR_VERSION == 7) && (__LIBSYCL_MINOR_VERSION >= 2)) ||
+-         (__LIBSYCL_MAJOR_VERSION >= 8);
++  return (__LIBSYCL_MAJOR_VERSION >= 7) && (__LIBSYCL_MINOR_VERSION >= 2);
+ }
+ 
+ absl::Status MemcpyDeviceToHost(::sycl::queue* stream_handle, void* dst_host,
+@@ -473,17 +471,15 @@ absl::Status SyclStreamSynchronize(::sycl::queue* stream_handle) {
+ absl::StatusOr<::sycl::event> SyclGetRecentEventFromStream(
+     ::sycl::queue* stream_handle) {
+   try {
+-    if (IsOneAPIVersionAtLeast2024_2()) {
+-      // Zero overhead: Does not submit a barrier or enqueue work.
+-      std::optional<::sycl::event> event =
++    // On an empty queue, ext_oneapi_get_last_event() may return an event
++    // with no Level Zero handle (seen on oneAPI 2026.1).
++    if (IsOneAPIVersionAtLeast2024_2() && !stream_handle->ext_oneapi_empty()) {
++      std::optional<::sycl::event> last_event =
+           stream_handle->ext_oneapi_get_last_event();
+-      if (event.has_value()) {
+-        return event.value();
++      if (last_event.has_value()) {
++        return *last_event;
+       }
+-      // Submit a barrier if no prior event exists.
+-      return stream_handle->ext_oneapi_submit_barrier();
+     }
+-    // Always submit a barrier on older oneAPI versions.
+     return stream_handle->ext_oneapi_submit_barrier();
+   } catch (const ::sycl::exception& e) {
+     return absl::InternalError(absl::StrCat(
+diff --git a/xla/stream_executor/sycl/sycl_matmul_utils.cc b/xla/stream_executor/sycl/sycl_matmul_utils.cc
+index 4125b4293e..97af56e86f 100644
+--- a/xla/stream_executor/sycl/sycl_matmul_utils.cc
++++ b/xla/stream_executor/sycl/sycl_matmul_utils.cc
+@@ -223,7 +223,7 @@ absl::StatusOr<dnnl::memory::desc> ShapeToMemDesc(const xla::Shape& shape) {
+     return dnnl::memory::desc{};
+   }
+   ABSL_ASSIGN_OR_RETURN(dnnl::memory::data_type dtype,
+-                        sycl::ToOneDnnDataType(shape.element_type()));
++                   sycl::ToOneDnnDataType(shape.element_type()));
+   return dnnl::memory::desc(dims, dtype, strides);
+ }
+ 
+diff --git a/xla/tests/fft_test.cc b/xla/tests/fft_test.cc
+index 61df3a2c6c..47ab1860bb 100644
+--- a/xla/tests/fft_test.cc
++++ b/xla/tests/fft_test.cc
+@@ -37,5 +37,49 @@ TEST_F(FftTextTest, Fft) {
+   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{4e-3, 4e-3}));
+ }
+ 
++TEST_F(FftTextTest, FftNonPowerOfTwoLength) {
++  absl::string_view hlo_string = R"(
++  HloModule fft
++
++  ENTRY main {
++    input = c64[3,20]{1,0} parameter(0)
++    ROOT fft = c64[3,20]{1,0} fft(input), fft_type=FFT, fft_length={20}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
++}
++
++TEST_F(FftTextTest, Ifft) {
++  absl::string_view hlo_string = R"(
++  HloModule ifft
++
++  ENTRY main {
++    input = c64[3,20]{1,0} parameter(0)
++    ROOT fft = c64[3,20]{1,0} fft(input), fft_type=IFFT, fft_length={20}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
++}
++
++TEST_F(FftTextTest, Rfft) {
++  absl::string_view hlo_string = R"(
++  HloModule rfft
++
++  ENTRY main {
++    input = f32[3,20]{1,0} parameter(0)
++    ROOT fft = c64[3,11]{1,0} fft(input), fft_type=RFFT, fft_length={20}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
++}
++
++TEST_F(FftTextTest, Rfft2D) {
++  absl::string_view hlo_string = R"(
++  HloModule rfft2d
++
++  ENTRY main {
++    input = f32[4,8]{1,0} parameter(0)
++    ROOT fft = c64[4,5]{1,0} fft(input), fft_type=RFFT, fft_length={4,8}
++  })";
++  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-4, 1e-4}));
++}
++
+ }  // namespace
+ }  // namespace xla
